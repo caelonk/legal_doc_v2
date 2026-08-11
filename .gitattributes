@@ -1,0 +1,26 @@
+# Line-ending policy for this repo.
+#
+# This file overrides each developer's local core.autocrlf setting. Config is
+# per-machine and does not travel; .gitattributes does — so the repo, not the
+# checkout, decides. Without it, a Windows clone and a macOS/Linux clone produce
+# whole-file diffs on every touched file and reviews become unreadable.
+
+# Detect text automatically; store LF in the repo and check out LF everywhere.
+* text=auto eol=lf
+
+# Windows batch files are the exception — the interpreter can mis-parse LF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary: never run line-ending or diff conversion over these.
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
