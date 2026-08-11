@@ -199,10 +199,32 @@ class DocumentChunk(BaseModel):
 
     index: int
     text: str
-    # Supplied by the parser, never by the model. These bound what the analyzer is
-    # allowed to report as a page_reference — see prompts/analysis.py.
-    start_page: int | None = None
-    end_page: int | None = None
+    # The EXACT pages that contributed text to this chunk, ascending and deduped.
+    # Not a min/max range: a page inside the span may have no text layer (a scanned
+    # exhibit, a full-page diagram), and offering it as a citable page would let the
+    # model cite a page this chunk never saw. Supplied by the parser, never by the
+    # model — see prompts/analysis.py.
+    page_numbers: list[int] = Field(default_factory=list)
+    token_estimate: int = 0
+
+    @property
+    def start_page(self) -> int | None:
+        return self.page_numbers[0] if self.page_numbers else None
+
+    @property
+    def end_page(self) -> int | None:
+        return self.page_numbers[-1] if self.page_numbers else None
+
+    @property
+    def has_contiguous_pages(self) -> bool:
+        """False when a page inside the span contributed no text.
+
+        Drives whether the prompt states a range or enumerates pages explicitly.
+        """
+        if len(self.page_numbers) < 2:
+            return True
+        first, last = self.page_numbers[0], self.page_numbers[-1]
+        return last - first + 1 == len(self.page_numbers)
 
 
 class ChunkFailureReason(str, Enum):

@@ -62,20 +62,31 @@ def build_chunk_prompt(chunk: DocumentChunk, *, document_type_hint: str | None =
     operationalizes the "never hallucinate page numbers" rule — an unbounded model
     guessing at pages is exactly the failure the rule exists to prevent.
     """
-    if chunk.start_page is None or chunk.end_page is None:
+    pages = chunk.page_numbers
+
+    if not pages:
         page_scope = (
             "The parser could not determine which pages this section spans. "
             "Return null for every page reference in this section."
         )
-    elif chunk.start_page == chunk.end_page:
+    elif len(pages) == 1:
         page_scope = (
-            f"This section is on page {chunk.start_page}. "
-            f"Use {chunk.start_page} or null for page references — nothing else."
+            f"This section is on page {pages[0]}. "
+            f"Use {pages[0]} or null for page references — nothing else."
+        )
+    elif chunk.has_contiguous_pages:
+        page_scope = (
+            f"This section spans pages {pages[0]} to {pages[-1]}. "
+            f"Use a page number in that range or null — nothing else."
         )
     else:
+        # A page inside the span contributed no text. Enumerating rather than
+        # giving a range keeps the skipped page from being offered as citable.
+        listed = ", ".join(str(p) for p in pages)
         page_scope = (
-            f"This section spans pages {chunk.start_page} to {chunk.end_page}. "
-            f"Use a page number in that range or null — nothing else."
+            f"This section draws on pages {listed} only. Use one of exactly those "
+            f"page numbers, or null — nothing else. Pages in between are not part "
+            f"of this section."
         )
 
     hint = (
