@@ -141,6 +141,57 @@ class ChunkAnalysis(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class ExtractionMethod(str, Enum):
+    """Which library produced the text.
+
+    Surfaced so a support conversation can distinguish "the PDF was awkward and
+    we fell back" from "extraction was clean".
+    """
+
+    PDFPLUMBER = "pdfplumber"
+    PYMUPDF = "pymupdf"
+
+
+class PageText(BaseModel):
+    """Text extracted from one page, with the page number the parser observed.
+
+    This is the ONLY origin of page numbers in the system. The model never
+    supplies one — see CLAUDE.md, "Do NOT hallucinate page numbers".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_number: int = Field(description="1-indexed, matching what a reader sees.")
+    text: str
+
+
+class ParsedDocument(BaseModel):
+    """The result of extracting text from an uploaded PDF."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    pages: list[PageText]
+    extraction_method: ExtractionMethod
+
+    @property
+    def page_count(self) -> int:
+        return len(self.pages)
+
+    @property
+    def total_characters(self) -> int:
+        return sum(len(p.text) for p in self.pages)
+
+    @property
+    def pages_with_text(self) -> int:
+        """Pages that yielded any non-whitespace text.
+
+        A document where this is far below `page_count` is likely part-scanned —
+        worth surfacing rather than silently analyzing the readable half.
+        """
+        return sum(1 for p in self.pages if p.text.strip())
+
+
 class DocumentChunk(BaseModel):
     """One token-aware slice of parser-extracted text, produced by chunker.py."""
 
