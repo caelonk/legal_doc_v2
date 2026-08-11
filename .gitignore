@@ -1,0 +1,36 @@
+# Secrets ------------------------------------------------------------------
+# Ignore every .env variant, then re-admit the committed template.
+.env
+.env.*
+!.env.example
+
+# Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend ----------------------------------------------------------
+node_modules/
+dist/
+build/
+.vite/
+*.local
+
+# Uploaded documents -------------------------------------------------------
+# CLAUDE.md: raw PDFs live in the Supabase storage bucket, not the repo. These
+# are user-uploaded legal documents — treat them as confidential, not test data.
+uploads/
+*.pdf
+
+# OS / editor --------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
