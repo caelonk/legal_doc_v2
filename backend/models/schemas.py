@@ -326,6 +326,11 @@ class AnalysisRun(BaseModel):
 
     analyzed: list[AnalyzedChunk]
     failures: list[ChunkFailure]
+    # What the classification pre-pass concluded, or None when it was skipped or
+    # not confident enough to use. Reported rather than discarded because it
+    # conditioned every chunk's missing-clause judgments: a run whose findings look
+    # odd is not diagnosable without knowing what the model thought it was reading.
+    document_type_hint: str | None = None
 
     @property
     def total_chunks(self) -> int:
@@ -335,3 +340,154 @@ class AnalysisRun(BaseModel):
     def is_partial(self) -> bool:
         """True when the UI must disclose that some sections were skipped."""
         return bool(self.failures)
+
+
+# --------------------------------------------------------------------------
+# HTTP response models. What the frontend actually receives.
+#
+# Kept separate from the pipeline models above because the two have different
+# audiences. The pipeline carries diagnostic text; the wire must not. Returning
+# a pipeline model straight out of a route would serialise `ChunkFailure.detail`
+# — raw API error bodies and pydantic tracebacks — into the browser, which
+# CLAUDE.md's error-handling rules forbid. The conversion functions in
+# routers/documents.py are the only bridge, so that leak has one place to happen
+# and one place to prevent.
+# --------------------------------------------------------------------------
+
+
+class HealthResponse(BaseModel):
+    """Liveness plus the one dependency that silently breaks everything.
+
+    `analysis_available` is false when no ANTHROPIC_API_KEY was configured. Parsing
+    and chunking still work in that state, so a plain "ok" would be true and
+    useless — every upload would fail at the last step with no way to tell why from
+    outside the process.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    analysis_available: bool
+    analysis_model: str
+    detail: str | None = Field(
+        default=None, description="Why analysis is unavailable, when it is."
+    )
+
+
+class JobStatus(str, Enum):
+    """Lifecycle of one analysis request.
+
+    The values map onto the processing stages docs/ui-patterns.md asks the UI to
+    show ("Extracting text" -> "Analyzing 4 of 11 sections" -> "Compiling
+    results"). Anything vaguer would force the frontend back to an opaque spinner.
+    """
+
+    QUEUED = "QUEUED"
+    ANALYZING = "ANALYZING"
+    COMPILING = "COMPILING"
+    COMPLETE = "COMPLETE"
+    FAILED = "FAILED"
+
+
+class SkippedSection(BaseModel):
+    """A chunk that could not be analyzed, in the form the frontend receives.
+
+    `ChunkFailure.detail` is deliberately absent — it carries raw API error bodies
+    and validation tracebacks, which belong in logs only.
+
+    `pages` is included so the disclosure can be specific ("pages 12-14 could not
+    be analyzed") rather than an unlocatable count.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_index: int
+    reason: ChunkFailureReason
+    message: str = Field(description="Plain language, safe to render.")
+    pages: list[int]
+
+
+class SectionAnalysis(BaseModel):
+    """One successfully analyzed chunk, tagged with the pages it came from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_index: int
+    pages: list[int]
+    analysis: ChunkAnalysis
+
+
+class DocumentMeta(BaseModel):
+    """What was uploaded and what extraction made of it.
+
+    `pages_with_text` next to `page_count` is what lets the UI say "34 of 40 pages
+    contained readable text" — a part-scanned document analyzed silently is the
+    failure this exists to prevent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    size_bytes: int
+    page_count: int
+    pages_with_text: int
+    extraction_method: ExtractionMethod
+    chunk_count: int
+
+
+class AnalysisResult(BaseModel):
+    """The completed analysis payload.
+
+    NOT a document-level merge. Sections are returned as analyzed, per chunk: the
+    200-token overlap means a clause on a boundary can appear in two sections, and
+    `document_type` can differ between them. Reconciling that is the aggregation
+    step recorded as unbuilt in AnalysisRun's docstring. Returning the raw
+    per-chunk view matches the current phase in CLAUDE.md and, more importantly,
+    does not fake a merge that has not been designed.
+
+    `pages` carries the extracted source text so the frontend can implement the
+    provenance affordance — clicking "p. 12" scrolls a source pane and highlights
+    it — without a second round trip. Provenance is the point of the product; it
+    should not be one network failure away from unavailable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    document: DocumentMeta
+    document_type_hint: str | None = Field(
+        description="What the classification pre-pass concluded, or null if it was "
+        "skipped or not confident. Exposed because it conditioned every section's "
+        "missing-clause judgments, so a wrong hint should be visible, not buried."
+    )
+    pages: list[PageText]
+    sections: list[SectionAnalysis]
+    skipped: list[SkippedSection]
+
+    @property
+    def is_partial(self) -> bool:
+        return bool(self.skipped)
+
+
+class JobState(BaseModel):
+    """Poll response: where an analysis has got to, and its result once done."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    status: JobStatus
+    stage_message: str = Field(
+        description="Ready-to-render progress line, e.g. 'Analyzing 4 of 11 sections'."
+    )
+    completed_chunks: int
+    total_chunks: int
+    document: DocumentMeta = Field(
+        description="Available from the first response — the UI shows filename and "
+        "page count before analysis finishes."
+    )
+    result: AnalysisResult | None = Field(
+        description="Populated only when status is COMPLETE."
+    )
+    error: str | None = Field(
+        description="Plain-language failure reason when status is FAILED. Never a "
+        "traceback."
+    )

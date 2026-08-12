@@ -78,3 +78,35 @@ CLASSIFICATION_THINKING: dict[str, str] = {"type": "disabled"}
 # Chunking -----------------------------------------------------------------
 CHUNK_TOKENS = 3000
 OVERLAP_TOKENS = 200
+
+# HTTP layer ---------------------------------------------------------------
+# Upload ceiling. Enforced by reading the stream incrementally rather than by
+# trusting Content-Length, which a client controls. 15 MB is a long text-based
+# contract; scanned PDFs blow past it, but those are rejected by the parser anyway
+# for having no text layer.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+# Cost ceiling per document. Each chunk is one Sonnet call, so this is the only
+# thing standing between a 900-page filing and an unbounded bill. Roughly 300-350
+# pages of ordinary contract text.
+MAX_CHUNKS_PER_DOCUMENT = 60
+
+# Analyses allowed to run at once across the whole process. Each one internally
+# fans out to DEFAULT_MAX_CONCURRENCY chunk calls, so the real ceiling on in-flight
+# API requests is the product of the two.
+MAX_CONCURRENT_ANALYSES = 2
+
+# How long a finished job stays readable before eviction. Long enough for a user to
+# reload the results tab, short enough that the in-memory store cannot grow without
+# bound.
+JOB_RETENTION_SECONDS = 60 * 60
+
+# Browser origins allowed to call the API. The Vite dev server defaults to 5173;
+# CRA to 3000. Deployment adds its real origin here — never "*", because these
+# requests carry an uploaded document.
+ALLOWED_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)

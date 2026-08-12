@@ -34,6 +34,8 @@ from models.schemas import (
     Confidence,
     DocumentChunk,
     DocumentTypeGuess,
+    RiskFlag,
+    RiskLevel,
 )
 from prompts.analysis import build_chunk_prompt
 from services import analyzer
@@ -107,6 +109,16 @@ class FakeClient:
         if classification is None:
             classification = stub_response("end_turn", WEAK_GUESS)
         self.messages = _FakeMessages(chunk_script, classification)
+        self.closed = False
+
+    async def close(self) -> None:
+        """The app closes its client on shutdown, so the double must too.
+
+        Without this, an app-level test fails during teardown rather than on the
+        behaviour it was checking — an incomplete test double masquerading as a
+        product bug.
+        """
+        self.closed = True
 
 
 def build_contract_pdf() -> bytes:
@@ -441,6 +453,75 @@ async def main() -> int:
     ]:
         got = analyzer.interpret_response(resp, 0)
         r.check(label, isinstance(got, expected), type(got).__name__)
+
+    r.section("page-reference enforcement")
+
+    def flag(page):
+        return RiskFlag(
+            clause_type="Indemnification",
+            severity=RiskLevel.HIGH,
+            explanation="Broad indemnity.",
+            page_reference=page,
+        )
+
+    def analysis(*pages):
+        return ChunkAnalysis(
+            summary="S",
+            risk_flags=[flag(p) for p in pages],
+            missing_clauses=[],
+            document_type="Lease",
+        )
+
+    # The model was told the section covers pages 3 and 4. Page 7 was never in
+    # this chunk, so citing it is an invented citation the schema cannot catch.
+    got = analyzer.interpret_response(
+        stub_response("end_turn", analysis(3, 7, None)), 0, allowed_pages=[3, 4]
+    )
+    refs = [f.page_reference for f in got.analysis.risk_flags]
+    r.check("in-range page reference is kept", refs[0] == 3)
+    r.check("out-of-range page reference becomes null", refs[1] is None)
+    r.check("existing null is left alone", refs[2] is None)
+    r.check("no flag is dropped, only its citation", len(refs) == 3)
+    r.check(
+        "the finding itself survives",
+        got.analysis.risk_flags[1].clause_type == "Indemnification",
+    )
+
+    # Non-contiguous chunk: page 4 sits inside the span but contributed no text,
+    # so it is not citable even though it is between two pages that are.
+    got = analyzer.interpret_response(
+        stub_response("end_turn", analysis(4)), 0, allowed_pages=[3, 5]
+    )
+    r.check(
+        "a page inside the span but not in the chunk is rejected",
+        got.analysis.risk_flags[0].page_reference is None,
+    )
+
+    got = analyzer.interpret_response(
+        stub_response("end_turn", analysis(3)), 0, allowed_pages=[]
+    )
+    r.check(
+        "no citable pages means every reference is nulled",
+        got.analysis.risk_flags[0].page_reference is None,
+    )
+
+    unchanged = analysis(99)
+    got = analyzer.interpret_response(stub_response("end_turn", unchanged), 0)
+    r.check(
+        "allowed_pages=None skips the check entirely",
+        got.analysis.risk_flags[0].page_reference == 99,
+    )
+    r.check("clean analysis is returned unmodified", got.analysis is unchanged)
+
+    # And end to end, through the real chunk path.
+    chunk = DocumentChunk(index=0, text="INDEMNIFICATION. Broad.", page_numbers=[3, 4])
+    client = FakeClient([stub_response("end_turn", analysis(11))])
+    got = await analyzer.analyze_chunk(client, chunk)
+    r.check(
+        "analyze_chunk passes the chunk's own pages as the allowed set",
+        isinstance(got, AnalyzedChunk)
+        and got.analysis.risk_flags[0].page_reference is None,
+    )
 
     return r.finish()
 

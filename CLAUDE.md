@@ -18,6 +18,7 @@ Built as a portfolio project targeting legal tech, SaaS, and analytics roles.
 legal-doc-analyzer/
 ├── backend/
 │   ├── main.py                  # FastAPI app entry point
+│   ├── config.py                # Model IDs + request/pipeline constants (single source)
 │   ├── routers/
 │   │   ├── documents.py         # Upload and analysis endpoints
 │   │   └── health.py
@@ -25,11 +26,13 @@ legal-doc-analyzer/
 │   │   ├── parser.py            # PDF text extraction logic
 │   │   ├── chunker.py           # Token-aware text chunking
 │   │   ├── analyzer.py          # Claude API calls + prompt logic
+│   │   ├── jobs.py              # In-memory analysis job store (see API Surface)
 │   │   └── supabase.py          # Storage client
 │   ├── models/
 │   │   └── schemas.py           # Pydantic request/response models
-│   └── prompts/
-│       └── analysis.py          # All prompt templates (centralized)
+│   ├── prompts/
+│   │   └── analysis.py          # All prompt templates (centralized)
+│   └── tests/                   # Dependency-free suite; python backend/tests/run_all.py
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
@@ -155,6 +158,28 @@ building analysis, viewer, or state-handling UI.
   rings, full keyboard operability.
 - Long-form document text: 16-18px, line-height 1.6, max ~70ch measure.
 
+## API Surface
+```
+GET  /api/health                          liveness + whether analysis is configured
+POST /api/documents/analyze               multipart PDF -> 202 { job_id, document, ... }
+GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLETE
+```
+- Upload is parsed and chunked INSIDE the POST, so an unusable file gets an immediate
+  400 naming the reason, and the 202 already carries filename/page count for the UI.
+- Analysis runs as a background job because it is slow and because determinate progress
+  ("Analyzing 4 of 11 sections") only exists if it can be read while it happens.
+- Job state is in this process's memory (`services/jobs.py`). **Run a single worker.**
+  `--workers 2` would answer polls for jobs the other worker owns. Lifting this means
+  moving job state to Supabase, alongside document history.
+- `ChunkFailure.detail` NEVER crosses the wire. `SkippedSection` is the public form and
+  omits it; `routers/documents.py::_build_result` is the only conversion point. Keep it
+  the only one.
+- Ceilings live in config.py: `MAX_UPLOAD_BYTES`, `MAX_CHUNKS_PER_DOCUMENT` (the only
+  thing bounding per-document API spend), `MAX_CONCURRENT_ANALYSES`.
+- A run in which EVERY chunk failed is reported as FAILED, not as a successful analysis
+  with zero findings. "No risks found" is the most dangerous thing this product can say,
+  so it is never said by accident.
+
 ## Error Handling Rules
 - All Claude API calls wrapped in try/except with specific error messages returned to frontend
 - If PDF parsing fails, return a clear user-facing error — never a raw traceback
@@ -166,13 +191,20 @@ building analysis, viewer, or state-handling UI.
 - Do NOT use WidthType.PERCENTAGE in any docx output
 - Do NOT store raw PDF files in the repo — use Supabase storage bucket
 - Do NOT use synchronous requests in FastAPI routes
-- Do NOT hallucinate page numbers — only include page_reference if the parser provides it
+- Do NOT hallucinate page numbers — only include page_reference if the parser provides it.
+  This is now ENFORCED, not just requested: `analyzer._sanitize_page_references` nulls any
+  page a chunk's parser-supplied `page_numbers` does not contain. The prompt asks; the
+  code checks. Structured outputs guarantees the field is an int or null and can say
+  nothing about whether the int is real.
 
 ## Dev Commands
 ```bash
-# Backend
+# Backend — single worker only, see API Surface
 cd backend
 uvicorn main:app --reload --port 8000
+
+# Backend tests (no pytest needed)
+python backend/tests/run_all.py
 
 # Frontend
 cd frontend

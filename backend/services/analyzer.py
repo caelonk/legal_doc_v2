@@ -41,6 +41,7 @@ from models.schemas import (
     Confidence,
     DocumentChunk,
     DocumentTypeGuess,
+    RiskFlag,
 )
 from prompts.analysis import (
     ANALYSIS_SYSTEM_PROMPT,
@@ -85,11 +86,66 @@ def _is_truncated_json(exc: ValidationError) -> bool:
         return False
 
 
+def _sanitize_page_references(
+    analysis: ChunkAnalysis, chunk_index: int, allowed_pages: list[int] | None
+) -> ChunkAnalysis:
+    """Null out any page reference the parser did not supply for this chunk.
+
+    Structured outputs guarantees `page_reference` is an int or null. It cannot
+    guarantee the int names a page this chunk was actually built from — that is a
+    truth claim, and the schema has no access to the truth. The prompt states the
+    permitted pages, but a prompt is a request, not an enforcement point.
+
+    So this is the enforcement point. CLAUDE.md's "do NOT hallucinate page numbers
+    — only include page_reference if the parser provides it" is a hard rule, and
+    the parser-supplied `page_numbers` is the only authority on what it provided.
+
+    Out-of-range references are replaced with null rather than dropped: null
+    already has a defined rendering ("Source not located" per
+    .claude/rules/ai-output.md), and discarding the whole flag would lose a
+    finding that may well be real — it is the citation that is untrustworthy, not
+    necessarily the risk. Downgrading to an honest "unlocated" beats both silently
+    keeping a wrong page number and silently deleting the finding.
+
+    `allowed_pages=None` means "no page information to check against", which
+    skips the check. An EMPTY list is different and meaningful: the chunk has no
+    citable pages at all, so every reference is unverifiable and all are nulled.
+    """
+    if allowed_pages is None:
+        return analysis
+
+    allowed = set(allowed_pages)
+    cleaned: list[RiskFlag] = []
+    invented: list[int] = []
+
+    for flag in analysis.risk_flags:
+        if flag.page_reference is not None and flag.page_reference not in allowed:
+            invented.append(flag.page_reference)
+            cleaned.append(flag.model_copy(update={"page_reference": None}))
+        else:
+            cleaned.append(flag)
+
+    if not invented:
+        return analysis
+
+    # Logged at warning, not debug: a model routinely citing pages it was not given
+    # is a prompt problem worth seeing, even though the output is now safe.
+    logger.warning(
+        "chunk %s cited %s page(s) outside its own range %s (%s) — replaced with null",
+        chunk_index,
+        len(invented),
+        sorted(allowed),
+        invented,
+    )
+    return analysis.model_copy(update={"risk_flags": cleaned})
+
+
 def interpret_response(
     response: _ParsedResponse,
     chunk_index: int,
     *,
     max_tokens: int = MAX_TOKENS_PER_CHUNK,
+    allowed_pages: list[int] | None = None,
 ) -> AnalyzedChunk | ChunkFailure:
     """Map an API response onto a success or a typed failure.
 
@@ -144,7 +200,10 @@ def interpret_response(
             detail=f"parsed_output was None with stop_reason={stop_reason}",
         )
 
-    return AnalyzedChunk(chunk_index=chunk_index, analysis=parsed)
+    return AnalyzedChunk(
+        chunk_index=chunk_index,
+        analysis=_sanitize_page_references(parsed, chunk_index, allowed_pages),
+    )
 
 
 async def _attempt_chunk(
@@ -238,7 +297,12 @@ async def _attempt_chunk(
             detail=f"ValidationError: {exc}",
         )
 
-    return interpret_response(response, chunk.index, max_tokens=max_tokens)
+    return interpret_response(
+        response,
+        chunk.index,
+        max_tokens=max_tokens,
+        allowed_pages=chunk.page_numbers,
+    )
 
 
 async def analyze_chunk(
@@ -431,7 +495,7 @@ async def analyze_document(
     answer directly, or `classify=False` to skip it.
     """
     if not chunks:
-        return AnalysisRun(analyzed=[], failures=[])
+        return AnalysisRun(analyzed=[], failures=[], document_type_hint=None)
 
     hint = document_type_hint
     if hint is None and classify:
@@ -471,4 +535,4 @@ async def analyze_document(
     if failures:
         logger.warning("%s of %s chunks could not be analyzed", len(failures), total)
 
-    return AnalysisRun(analyzed=analyzed, failures=failures)
+    return AnalysisRun(analyzed=analyzed, failures=failures, document_type_hint=hint)

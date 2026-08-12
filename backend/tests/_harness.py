@@ -58,14 +58,34 @@ def make_document(pages: list[tuple[int, str]], name: str = "test.pdf") -> Parse
     )
 
 
+def _insert_or_raise(page, body: str, index: int) -> None:
+    """Write `body` onto `page`, refusing to continue if it did not fit.
+
+    insert_textbox returns the leftover vertical space, or a NEGATIVE number when
+    the text was too tall — and in that case it writes NOTHING. Silently, so a
+    fixture that overruns the page produces a valid PDF with an empty text layer,
+    and the test that depends on it fails somewhere far away with a misleading
+    message. Ask how much text a page holds instead of assuming; this raises so
+    the answer is "your fixture is too long", not "the parser is broken".
+    """
+    import fitz
+
+    overflow = page.insert_textbox(fitz.Rect(50, 50, 550, 780), body, fontsize=9)
+    if overflow < 0:
+        raise ValueError(
+            f"fixture page {index} is {len(body)} characters, which overflows one "
+            f"page by {abs(overflow):.0f}pt and would silently produce a blank "
+            f"page. Split it across pages."
+        )
+
+
 def make_text_pdf(pages_text: list[str]) -> bytes:
     """A real PDF with a text layer on every page."""
     import fitz
 
     doc = fitz.open()
-    for body in pages_text:
-        page = doc.new_page()
-        page.insert_textbox(fitz.Rect(50, 50, 550, 780), body, fontsize=9)
+    for i, body in enumerate(pages_text):
+        _insert_or_raise(doc.new_page(), body, i)
     data = doc.tobytes()
     doc.close()
     return data
@@ -89,12 +109,12 @@ def make_mixed_pdf(bodies: list[str | None]) -> bytes:
     import fitz
 
     doc = fitz.open()
-    for body in bodies:
+    for i, body in enumerate(bodies):
         page = doc.new_page()
         if body is None:
             page.draw_rect(fitz.Rect(80, 80, 500, 600), fill=(0.75, 0.75, 0.75))
         else:
-            page.insert_textbox(fitz.Rect(50, 50, 550, 780), body, fontsize=9)
+            _insert_or_raise(page, body, i)
     data = doc.tobytes()
     doc.close()
     return data

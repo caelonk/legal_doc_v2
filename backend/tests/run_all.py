@@ -13,7 +13,13 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MODULES = ["test_schemas.py", "test_parser.py", "test_chunker.py", "test_pipeline.py"]
+MODULES = [
+    "test_schemas.py",
+    "test_parser.py",
+    "test_chunker.py",
+    "test_pipeline.py",
+    "test_api.py",
+]
 
 
 def main() -> int:
