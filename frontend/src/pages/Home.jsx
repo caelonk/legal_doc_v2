@@ -57,7 +57,19 @@ export default function Home() {
       )}
 
       <div className="mt-8">
-        <UploadZone onSubmit={handleSubmit} busy={busy} error={error} />
+        <UploadZone
+          onSubmit={handleSubmit}
+          busy={busy}
+          error={error}
+          // Undefined until health resolves. UploadZone treats that as "stored",
+          // which is the safe direction for a claim about confidential text.
+          storage={
+            health && {
+              available: health.history_available,
+              retentionDays: health.history_retention_days,
+            }
+          }
+        />
       </div>
 
       <p className="mt-10 max-w-measure text-xs text-ink-subtle">

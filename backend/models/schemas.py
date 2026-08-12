@@ -16,6 +16,7 @@ per project rules requires asking first.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -371,6 +372,16 @@ class HealthResponse(BaseModel):
     status: str
     analysis_available: bool
     analysis_model: str
+    history_available: bool = Field(
+        description="False when no Supabase credentials were configured. Analysis "
+        "is unaffected; results simply are not stored."
+    )
+    history_retention_days: int = Field(
+        description="How long a stored analysis is kept. Reported because the "
+        "upload disclosure states this number to the user, and a promise about "
+        "deleting confidential text must come from the value the server actually "
+        "enforces rather than from a copy of it in the frontend."
+    )
     detail: str | None = Field(
         default=None, description="Why analysis is unavailable, when it is."
     )
@@ -572,3 +583,47 @@ class JobState(BaseModel):
         description="Plain-language failure reason when status is FAILED. Never a "
         "traceback."
     )
+
+
+class HistoryEntry(BaseModel):
+    """One stored analysis, as it appears in a list.
+
+    Summary fields only — deliberately NOT the analysis. A history list showing
+    twenty documents would otherwise ship twenty documents' worth of extracted
+    contract text to render twenty filenames. The full result is a separate
+    request, made when a reader actually opens one.
+
+    Field names match the columns in `backend/sql/001_analyses.sql` so a row
+    validates directly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    created_at: datetime
+    filename: str
+    page_count: int
+    pages_with_text: int
+    document_type: str | None = Field(
+        description="Null when nothing in the document could be analyzed."
+    )
+    risk_flag_count: int
+    missing_clause_count: int
+    skipped_count: int = Field(
+        description="Sections that could not be analyzed. Carried into the list so "
+        "a partial analysis is identifiable before it is opened, not after."
+    )
+
+
+class HistoryPage(BaseModel):
+    """A page of stored analyses.
+
+    An object rather than a bare array: a top-level JSON array cannot grow a field
+    later without breaking every client, and pagination is exactly the thing that
+    grows one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entries: list[HistoryEntry]
+    limit: int = Field(description="The maximum this request could have returned.")

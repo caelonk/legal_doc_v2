@@ -7,6 +7,7 @@ the check() calls can be swapped for bare asserts without restructuring.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,31 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from models.schemas import ExtractionMethod, PageText, ParsedDocument  # noqa: E402
+
+# Every credential the app reads at startup. Listed here so adding a service means
+# adding one line in one place, rather than remembering to scrub it in each test
+# module that builds an app.
+LIVE_CREDENTIALS = (
+    "ANTHROPIC_API_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_ANON_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
+
+
+def scrub_live_credentials() -> None:
+    """Remove real credentials from the environment before any app is started.
+
+    CALL THIS AFTER `import main`, never before. main.py runs load_dotenv() at
+    import time, which reads the developer's real .env — popping first just lets it
+    put everything back.
+
+    Without this, a test that starts the app builds live clients: the Anthropic one
+    spends money, and the Supabase one writes rows into the developer's actual
+    project every time the suite runs. Tests must not touch either.
+    """
+    for name in LIVE_CREDENTIALS:
+        os.environ.pop(name, None)
 
 
 class Results:

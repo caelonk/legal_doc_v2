@@ -10,14 +10,18 @@ Run: python backend/tests/test_api.py
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 
 import anthropic
 import httpx
 
-from _harness import Results, make_image_only_pdf, make_text_pdf
+from _harness import (
+    Results,
+    make_image_only_pdf,
+    make_text_pdf,
+    scrub_live_credentials,
+)
 
 import main
 from models.schemas import (
@@ -37,10 +41,11 @@ from test_pipeline import FakeClient, stub_response
 
 from fastapi.testclient import TestClient
 
-# Belt and braces: main.py calls load_dotenv() at import, which puts the real key
-# into the environment. Drop it before any app starts so no test can construct a
-# live client, whatever else goes wrong below.
-os.environ.pop("ANTHROPIC_API_KEY", None)
+# Belt and braces: main.py calls load_dotenv() at import, which puts the real
+# credentials into the environment. Drop them before any app starts, so no test can
+# construct a live Anthropic client or write a row into the real Supabase project,
+# whatever else goes wrong below. Must run after `import main`, not before.
+scrub_live_credentials()
 
 CLAUSE = (
     "LIMITATION OF LIABILITY. In no event shall the Disclosing Party be liable for "

@@ -17,6 +17,30 @@ function formatBytes(bytes) {
 }
 
 /**
+ * What happens to the uploaded document, in one sentence the user can act on.
+ *
+ * This copy is a factual claim about where confidential contract text goes, so it
+ * is DERIVED from the server rather than written as a constant. `history_available`
+ * and `history_retention_days` come from /api/health, which reports the values the
+ * backend actually enforces (config.HISTORY_RETENTION_DAYS, swept by
+ * services/supabase.py::purge_expired). A hardcoded sentence here would keep
+ * claiming 30 days after someone changed the constant to 90.
+ *
+ * When health has not loaded, the copy defaults to the STORED wording. Over-stating
+ * retention is the safe direction to be wrong; telling someone their contract is not
+ * saved when it is, is not.
+ */
+function storageSentence({ available, retentionDays } = {}) {
+  if (available === false) {
+    return 'Its text and findings are held in memory for that analysis only and are not saved.'
+  }
+  if (typeof retentionDays === 'number') {
+    return `Its text and findings are saved to your document history and deleted automatically after ${retentionDays} days.`
+  }
+  return 'Its text and findings are saved to your document history and deleted automatically after a set retention period.'
+}
+
+/**
  * Drag-and-drop PLUS a real file-picker button. Drag-only is an accessibility
  * failure (docs/ui-patterns.md §4) — it is unreachable by keyboard and by anyone
  * who cannot execute a drag gesture.
@@ -26,7 +50,7 @@ function formatBytes(bytes) {
  * design-system.md §8, and it is especially hostile when the user has to go find
  * a contract on disk again.
  */
-export default function UploadZone({ onSubmit, busy, error }) {
+export default function UploadZone({ onSubmit, busy, error, storage }) {
   const [file, setFile] = useState(null)
   const [localError, setLocalError] = useState(null)
   const [dragging, setDragging] = useState(false)
@@ -131,9 +155,8 @@ export default function UploadZone({ onSubmit, busy, error }) {
       <p className="mt-6 flex items-start gap-2 text-xs text-ink-subtle">
         <Lock size={16} strokeWidth={1.5} aria-hidden="true" className="mt-0.5 shrink-0" />
         <span>
-          Your document is sent to the Anthropic API for analysis and held in memory for the
-          duration of that analysis. It is not written to disk and not stored after the result
-          expires.
+          Your document is sent to the Anthropic API for analysis. {storageSentence(storage)} The
+          uploaded PDF file itself is never saved.
         </span>
       </p>
     </form>

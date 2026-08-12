@@ -20,6 +20,7 @@ MODULES = [
     "test_pipeline.py",
     "test_aggregator.py",
     "test_api.py",
+    "test_history.py",
 ]
 
 

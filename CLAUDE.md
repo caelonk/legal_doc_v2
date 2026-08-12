@@ -10,7 +10,8 @@ Built as a portfolio project targeting legal tech, SaaS, and analytics roles.
 - **Backend:** FastAPI (Python)
 - **LLM:** Anthropic Claude API (claude-sonnet-5 for analysis, claude-haiku-4-5-20251001 for lightweight tasks)
 - **PDF Parsing:** pdfplumber (primary), PyMuPDF (fallback for layout-heavy docs)
-- **Storage:** Supabase (file storage + PostgreSQL for document history)
+- **Storage:** Supabase PostgreSQL for document history (analysis + extracted text).
+  No file storage bucket — the uploaded PDF is never persisted.
 - **Auth:** Supabase Auth (if user accounts are added in V2)
 
 ## Project Structure
@@ -21,6 +22,7 @@ legal-doc-analyzer/
 │   ├── config.py                # Model IDs + request/pipeline constants (single source)
 │   ├── routers/
 │   │   ├── documents.py         # Upload and analysis endpoints
+│   │   ├── history.py           # Stored analyses: list, fetch, delete
 │   │   └── health.py
 │   ├── services/
 │   │   ├── parser.py            # PDF text extraction logic
@@ -28,11 +30,14 @@ legal-doc-analyzer/
 │   │   ├── analyzer.py          # Claude API calls + prompt logic
 │   │   ├── aggregator.py        # Per-section results -> one document-level view
 │   │   ├── jobs.py              # In-memory analysis job store (see API Surface)
-│   │   └── supabase.py          # Storage client
+│   │   └── supabase.py          # Document history. Analysis + extracted text to
+│   │                            # Postgres. NO PDF bytes, no storage bucket.
 │   ├── models/
 │   │   └── schemas.py           # Pydantic request/response models
 │   ├── prompts/
 │   │   └── analysis.py          # All prompt templates (centralized)
+│   ├── sql/
+│   │   └── 001_analyses.sql     # Applied by hand in the Supabase SQL editor
 │   └── tests/                   # Dependency-free suite; python backend/tests/run_all.py
 ├── frontend/
 │   ├── tailwind.config.js       # Semantic tokens; src/globals.css holds the raw values
@@ -186,9 +191,12 @@ building analysis, viewer, or state-handling UI.
 
 ## API Surface
 ```
-GET  /api/health                          liveness + whether analysis is configured
-POST /api/documents/analyze               multipart PDF -> 202 { job_id, document, ... }
-GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLETE
+GET    /api/health                        liveness + whether analysis and history are configured
+POST   /api/documents/analyze             multipart PDF -> 202 { job_id, document, ... }
+GET    /api/documents/analyze/{job_id}    progress, then the result once COMPLETE
+GET    /api/documents/history             recent analyses, summary fields only
+GET    /api/documents/history/{id}        one stored AnalysisResult
+DELETE /api/documents/history/{id}        remove one
 ```
 - Upload is parsed and chunked INSIDE the POST, so an unusable file gets an immediate
   400 naming the reason, and the 202 already carries filename/page count for the UI.
@@ -211,6 +219,34 @@ GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLET
   with zero findings. "No risks found" is the most dangerous thing this product can say,
   so it is never said by accident.
 
+## Document History (Supabase)
+- What is stored: the serialized `AnalysisResult` — which carries the EXTRACTED TEXT in
+  its `pages` field — plus denormalized summary columns. What is NOT stored: the uploaded
+  PDF. There is no storage bucket. Smallest confidentiality surface that still supports
+  history; adding bucket upload changes what the user was told and is not a silent change.
+- `analyses` has RLS ENABLED WITH NO POLICIES, so only the service role reaches it. The
+  backend uses `SUPABASE_SERVICE_ROLE_KEY`, which bypasses RLS and must never reach the
+  browser. Do NOT add a permissive policy to "make it work" — the table holds full
+  contract text and the anon key is public.
+- Two failure policies, and the split is the point:
+  `save_analysis` NEVER raises — the analysis has already succeeded and a storage error
+  must not turn it into a failure. Every READ raises `HistoryError` — a list that returned
+  `[]` because the database was down would say "you have no documents", which is the same
+  species of lie as "no risks found".
+  `routers/documents.py` ALSO wraps the save call: without that, a raise would reach the
+  background task's handler and call `job.fail()` on a completed analysis. Both layers are
+  load-bearing and both are mutation-tested.
+- Retention is `config.HISTORY_RETENTION_DAYS`, swept on write by `purge_expired` (the same
+  pattern as `JobStore._evict_expired` — no background task, no pg_cron). That number is
+  USER-FACING: `/api/health` reports it and `UploadZone.jsx` interpolates it. Change the
+  constant and the promise follows; hardcode it in the component and the promise drifts.
+- The upload disclosure is a factual claim about where confidential text goes. If what is
+  stored ever changes, `UploadZone.jsx` changes in the SAME commit. `frontend/src/tests/
+  upload.test.jsx` exists to make that non-optional.
+- Schema DDL is `backend/sql/001_analyses.sql`, applied by hand. Tests never touch a real
+  project: `_harness.scrub_live_credentials()` removes every credential after `import main`
+  — before it, `load_dotenv` just puts them back.
+
 ## Error Handling Rules
 - All Claude API calls wrapped in try/except with specific error messages returned to frontend
 - If PDF parsing fails, return a clear user-facing error — never a raw traceback
@@ -220,7 +256,8 @@ GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLET
 ## What NOT to Do
 - Do NOT use LangChain or LlamaIndex — build the chunking and prompt logic directly
 - Do NOT use WidthType.PERCENTAGE in any docx output
-- Do NOT store raw PDF files in the repo — use Supabase storage bucket
+- Do NOT store raw PDF files ANYWHERE — not in the repo, and not in a Supabase bucket.
+  Only extracted text and the analysis are persisted. See Document History.
 - Do NOT use synchronous requests in FastAPI routes
 - Do NOT hallucinate page numbers — only include page_reference if the parser provides it.
   Three mechanisms, and all three are load-bearing:
@@ -237,6 +274,10 @@ GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLET
 
 ## Dev Commands
 ```bash
+# One-time: apply the history schema. Paste backend/sql/001_analyses.sql into the
+# Supabase SQL editor. Without it the app runs fine and simply stores nothing —
+# /api/health reports history_available: false.
+
 # Backend — single worker only, see API Surface
 cd backend
 uvicorn main:app --reload --port 8000

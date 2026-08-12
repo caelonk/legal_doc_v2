@@ -47,6 +47,7 @@ from services.analyzer import analyze_document
 from services.chunker import chunk_document_async
 from services.jobs import AnalysisJob
 from services.parser import ParserError, parse_pdf
+from services.supabase import save_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -188,13 +189,24 @@ async def _run_analysis(
             )
             return
 
-        job.succeed(_build_result(parsed, chunks, run, job.document))
+        result = _build_result(parsed, chunks, run, job.document)
+        job.succeed(result)
         logger.info(
             "job %s complete: %s sections analyzed, %s skipped",
             job.job_id,
             len(run.analyzed),
             len(run.failures),
         )
+
+        # Persistence happens AFTER succeed, and inside its own try, so that a
+        # storage problem cannot reach the handler below and call job.fail() on an
+        # analysis that has already completed. `save_analysis` is documented never
+        # to raise; this is the belt to that braces, and the cost of being wrong
+        # here is a finished analysis reported to the user as a failure.
+        try:
+            await save_analysis(app.state.supabase, result)
+        except Exception:  # noqa: BLE001 - history is never worth losing a result over
+            logger.exception("job %s: history save failed", job.job_id)
     except asyncio.CancelledError:
         # Shutdown, not a document problem. Mark it so a poll during drain reports
         # something truthful, then let the cancellation propagate.

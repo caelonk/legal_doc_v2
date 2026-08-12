@@ -28,6 +28,7 @@ Each test maps to a rule that was previously only prose in `CLAUDE.md`,
 | `document-header.test.jsx` | The page `h1`; partial-extraction disclosure; the classification hint that conditioned every finding |
 | `review.test.jsx` | Marking a finding reviewed never hides its explanation or its severity badge; the count stays honest while filtered; hidden findings are disclosed, not silently absent; the navigator shares the state; marks clear when the job changes |
 | `skeleton.test.jsx` | Placeholders instead of a spinner while analysing, `aria-hidden` so they are not announced, determinate progress still present, no findings table implied before there are findings |
+| `upload.test.jsx` | The confidentiality disclosure names storage, never claims the document is not saved while it is, states the retention the SERVER reports rather than a hardcoded number, and assumes storage while health is still loading |
 
 Every one of these was verified by mutation: break the rule in the source, confirm the
 matching test goes red, restore. A test that has never failed is not evidence.

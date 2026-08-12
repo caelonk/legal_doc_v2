@@ -26,8 +26,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import ALLOWED_ORIGINS, MAX_CONCURRENT_ANALYSES
-from routers import documents, health
+from routers import documents, health, history
 from services.jobs import JobStore
+from services.supabase import close_client as close_history_client
+from services.supabase import create_client as create_history_client
 
 # .env sits at the project root, one level above this file. Resolved explicitly
 # rather than by search so behaviour does not depend on the directory uvicorn was
@@ -54,6 +56,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     that names the cause. Refusing to boot would make the most common local-setup
     mistake present as a server that will not start, with the reason buried in
     whichever terminal scrolled past.
+
+    Supabase gets the same treatment, one step weaker: without it, analysis still
+    works end to end and only history is missing, so its absence is a warning
+    rather than an error.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if api_key:
@@ -63,6 +69,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error(
             "ANTHROPIC_API_KEY is not set — analysis endpoints will return 503. "
             "Copy .env.example to .env and fill it in."
+        )
+
+    # The service-role key, not the anon key: `analyses` has RLS on with no
+    # policies, so the anon key can read nothing. See services/supabase.py.
+    app.state.supabase = await create_history_client(
+        os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    )
+    if app.state.supabase is None:
+        logger.warning(
+            "Supabase is not configured — analyses will run normally but will not "
+            "be saved to history."
         )
 
     app.state.jobs = JobStore()
@@ -84,6 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.gather(*tasks, return_exceptions=True)
         if app.state.claude_client is not None:
             await app.state.claude_client.close()
+        await close_history_client(app.state.supabase)
 
 
 app = FastAPI(
@@ -106,6 +124,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(documents.router)
+app.include_router(history.router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -117,11 +136,19 @@ async def validation_error_handler(
     The default body is a list of pydantic error objects with `loc` paths into the
     request model. Useful in a terminal, meaningless in a UI, and it exposes
     internal field names. Details still go to the log.
+
+    Worded for any route, not just the upload. It used to say "attach a PDF",
+    which was true while /analyze was the only endpoint that could fail
+    validation; the history routes can now reject a query parameter, and a message
+    telling that caller to attach a PDF would send them somewhere useless.
     """
     logger.info("request validation failed for %s: %s", request.url.path, exc.errors())
     return JSONResponse(
         status_code=422,
-        content={"detail": "That request was not valid. Attach a PDF file and retry."},
+        content={
+            "detail": "That request was not valid. Check the file or parameters "
+            "and try again."
+        },
     )
 
 

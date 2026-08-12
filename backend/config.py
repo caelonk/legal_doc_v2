@@ -101,6 +101,20 @@ MAX_CONCURRENT_ANALYSES = 2
 # bound.
 JOB_RETENTION_SECONDS = 60 * 60
 
+# Document history ---------------------------------------------------------
+# How long a stored analysis is kept. This number is USER-FACING: the upload
+# disclosure tells the reader their document's text is deleted after this many
+# days, and /api/health reports it so that sentence is interpolated rather than
+# duplicated. Changing it here changes what the user is promised — there is no
+# second place to update, and that is the point.
+#
+# Enforced by services/supabase.py::purge_expired, swept on write.
+HISTORY_RETENTION_DAYS = 30
+
+# How many history entries one list request returns. Summary columns only, so this
+# is a UI pagination choice rather than a payload-size defence.
+HISTORY_PAGE_SIZE = 25
+
 # Browser origins allowed to call the API. The Vite dev server defaults to 5173;
 # CRA to 3000. Deployment adds its real origin here — never "*", because these
 # requests carry an uploaded document.
