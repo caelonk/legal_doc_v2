@@ -18,7 +18,11 @@ import httpx
 
 from _harness import Results, make_mixed_pdf
 
-from config import CLASSIFICATION_SAMPLE_CHARS
+from config import (
+    CLASSIFICATION_SAMPLE_CHARS,
+    MAX_TOKENS_PER_CHUNK,
+    TRUNCATION_RETRY_MAX_TOKENS,
+)
 
 from pydantic import ValidationError
 
@@ -188,7 +192,11 @@ async def main() -> int:
         stub_response("refusal", None),
     ])
     three = [DocumentChunk(index=i, text=f"c{i}", page_numbers=[i + 1]) for i in range(3)]
-    run = await analyzer.analyze_document(three, client=mixed, max_concurrency=3)
+    # Retry disabled so the truncated chunk stays a failure — this section is about
+    # how failures are collected and kept distinct, not about recovery.
+    run = await analyzer.analyze_document(
+        three, client=mixed, max_concurrency=3, retry_on_truncation=False
+    )
     r.check("successes collected", len(run.analyzed) == 1)
     r.check("failures collected, not dropped", len(run.failures) == 2)
     r.check("run reports partial", run.is_partial is True)
@@ -323,9 +331,12 @@ async def main() -> int:
     r.check("schema violation is NOT called truncation",
             analyzer._is_truncated_json(schema_violation) is False)
 
+    # retry_on_truncation=False isolates the classification of a single attempt;
+    # the retry behaviour itself is covered in its own section below.
     client = FakeClient([cut_short])
     outcome = await analyzer.analyze_chunk(
-        client, DocumentChunk(index=7, text="t", page_numbers=[1])
+        client, DocumentChunk(index=7, text="t", page_numbers=[1]),
+        retry_on_truncation=False,
     )
     r.check("truncated parse becomes a ChunkFailure", isinstance(outcome, ChunkFailure))
     r.check("classified TRUNCATED, not INVALID_OUTPUT",
@@ -339,6 +350,86 @@ async def main() -> int:
     )
     r.check("schema violation stays INVALID_OUTPUT",
             outcome.reason is ChunkFailureReason.INVALID_OUTPUT, outcome.reason.value)
+    r.check("schema violation is not retried",
+            len(client.messages.chunk_requests) == 1,
+            f"{len(client.messages.chunk_requests)} calls")
+
+    r.section("retry after truncation")
+    c = DocumentChunk(index=4, text="t", page_numbers=[1])
+
+    # json_invalid truncation, then success.
+    client = FakeClient([cut_short, stub_response("end_turn", GOOD)])
+    outcome = await analyzer.analyze_chunk(client, c)
+    reqs = client.messages.chunk_requests
+    r.check("truncated chunk is retried", len(reqs) == 2, f"{len(reqs)} calls")
+    r.check("retry recovers the chunk", isinstance(outcome, AnalyzedChunk))
+    r.check("first attempt uses the normal budget",
+            reqs[0]["max_tokens"] == MAX_TOKENS_PER_CHUNK, str(reqs[0]["max_tokens"]))
+    r.check("retry uses the larger budget",
+            reqs[1]["max_tokens"] == TRUNCATION_RETRY_MAX_TOKENS, str(reqs[1]["max_tokens"]))
+    r.check("retry keeps the same model", reqs[1]["model"] == reqs[0]["model"])
+    r.check("retry keeps the same prompt",
+            reqs[1]["messages"][0]["content"] == reqs[0]["messages"][0]["content"])
+
+    # stop_reason truncation (parse succeeded but output was cut) also retries.
+    client = FakeClient([stub_response("max_tokens", None), stub_response("end_turn", GOOD)])
+    outcome = await analyzer.analyze_chunk(client, c)
+    r.check("stop_reason truncation also retries",
+            len(client.messages.chunk_requests) == 2)
+    r.check("stop_reason truncation recovers", isinstance(outcome, AnalyzedChunk))
+
+    # Truncating twice gives up rather than escalating.
+    client = FakeClient([cut_short, cut_short])
+    outcome = await analyzer.analyze_chunk(client, c)
+    r.check("retries at most once", len(client.messages.chunk_requests) == 2)
+    r.check("persistent truncation reported as TRUNCATED",
+            outcome.reason is ChunkFailureReason.TRUNCATED, outcome.reason.value)
+    r.check("detail records that a retry happened",
+            "after truncation retry" in outcome.detail, outcome.detail[:60])
+    r.check("detail names the retry budget",
+            str(TRUNCATION_RETRY_MAX_TOKENS) in outcome.detail)
+    r.check("user message stays plain",
+            "max_tokens" not in outcome.user_message, outcome.user_message)
+
+    # A different failure on the retry keeps its own reason.
+    client = FakeClient([cut_short, schema_violation])
+    outcome = await analyzer.analyze_chunk(client, c)
+    r.check("retry failing differently keeps that reason",
+            outcome.reason is ChunkFailureReason.INVALID_OUTPUT, outcome.reason.value)
+
+    # Non-truncation failures are not retried.
+    for label, first in [
+        ("refusal", stub_response("refusal", None)),
+        ("schema violation", schema_violation),
+        ("rate limit", anthropic.RateLimitError(
+            "slow down",
+            response=httpx.Response(429, request=httpx.Request("POST", "https://x")),
+            body=None)),
+    ]:
+        client = FakeClient([first, stub_response("end_turn", GOOD)])
+        await analyzer.analyze_chunk(client, c)
+        r.check(f"{label} is not retried",
+                len(client.messages.chunk_requests) == 1,
+                f"{len(client.messages.chunk_requests)} calls")
+
+    # Opt-out.
+    client = FakeClient([cut_short, stub_response("end_turn", GOOD)])
+    outcome = await analyzer.analyze_chunk(client, c, retry_on_truncation=False)
+    r.check("retry_on_truncation=False makes one call",
+            len(client.messages.chunk_requests) == 1)
+    r.check("retry_on_truncation=False still reports TRUNCATED",
+            outcome.reason is ChunkFailureReason.TRUNCATED)
+
+    # The flag threads through analyze_document.
+    client = FakeClient([cut_short, stub_response("end_turn", GOOD)])
+    run = await analyzer.analyze_document([c], client=client, classify=False)
+    r.check("analyze_document retries by default", len(run.analyzed) == 1)
+    client = FakeClient([cut_short])
+    run = await analyzer.analyze_document(
+        [c], client=client, classify=False, retry_on_truncation=False
+    )
+    r.check("analyze_document honours retry_on_truncation=False",
+            len(run.failures) == 1 and len(client.messages.chunk_requests) == 1)
 
     r.section("interpret_response branches")
     for label, resp, expected in [

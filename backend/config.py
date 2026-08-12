@@ -35,6 +35,13 @@ LIGHTWEIGHT_MODEL = "claude-haiku-4-5-20251001"
 # first. services/analyzer.py detects that case explicitly — see _is_truncated_json.
 MAX_TOKENS_PER_CHUNK = 4000
 
+# Budget for the single retry after a truncated chunk. Deliberately 3x rather than
+# 2x: a truncation at 8000 tokens was observed during live testing, so doubling is
+# not demonstrably enough, while measured demand on real chunks (~1000 tokens)
+# leaves this with ample room. Only ever tried once — a chunk that truncates twice
+# is reported as a skipped section rather than retried into an unbounded spend.
+TRUNCATION_RETRY_MAX_TOKENS = 12000
+
 # Set explicitly — never rely on the model default, which varies by model and
 # changed between Sonnet 4.6 and Sonnet 5. Treat as read-only; callers pass it
 # straight to the API.

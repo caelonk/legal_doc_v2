@@ -30,6 +30,7 @@ from config import (
     LIGHTWEIGHT_MODEL,
     MAX_TOKENS_PER_CHUNK,
     THINKING_CONFIG,
+    TRUNCATION_RETRY_MAX_TOKENS,
 )
 from models.schemas import (
     AnalysisRun,
@@ -85,7 +86,10 @@ def _is_truncated_json(exc: ValidationError) -> bool:
 
 
 def interpret_response(
-    response: _ParsedResponse, chunk_index: int
+    response: _ParsedResponse,
+    chunk_index: int,
+    *,
+    max_tokens: int = MAX_TOKENS_PER_CHUNK,
 ) -> AnalyzedChunk | ChunkFailure:
     """Map an API response onto a success or a typed failure.
 
@@ -95,6 +99,9 @@ def interpret_response(
     `stop_reason` is checked BEFORE `parsed_output`: a refusal or a truncation
     bypasses the structured-output guarantee, so the parsed field may be missing or
     non-conforming even though the request itself succeeded.
+
+    `max_tokens` is passed in rather than read from config so the diagnostics name
+    the budget that was actually used — which differs on a retry.
     """
     stop_reason = response.stop_reason
 
@@ -109,20 +116,20 @@ def interpret_response(
 
     if stop_reason == "max_tokens":
         # Budget failure, NOT a malformed-JSON failure. If this fires repeatedly,
-        # MAX_TOKENS_PER_CHUNK is too low for the thinking config — do not treat it
-        # as random model noise.
+        # the budget is too low for the thinking config — do not treat it as random
+        # model noise.
         logger.error(
             "chunk %s hit the token ceiling (max_tokens=%s, thinking=%s) — "
             "output truncated; review the per-chunk budget",
             chunk_index,
-            MAX_TOKENS_PER_CHUNK,
+            max_tokens,
             THINKING_CONFIG,
         )
         return ChunkFailure(
             chunk_index=chunk_index,
             reason=ChunkFailureReason.TRUNCATED,
             user_message="This section was too long to analyze in one pass.",
-            detail=f"stop_reason=max_tokens at max_tokens={MAX_TOKENS_PER_CHUNK}",
+            detail=f"stop_reason=max_tokens at max_tokens={max_tokens}",
         )
 
     parsed = response.parsed_output
@@ -140,22 +147,26 @@ def interpret_response(
     return AnalyzedChunk(chunk_index=chunk_index, analysis=parsed)
 
 
-async def analyze_chunk(
+async def _attempt_chunk(
     client: AsyncAnthropic,
     chunk: DocumentChunk,
     *,
-    document_type_hint: str | None = None,
+    max_tokens: int,
+    document_type_hint: str | None,
 ) -> AnalyzedChunk | ChunkFailure:
-    """Analyze one chunk. Never raises — every failure becomes a ChunkFailure.
+    """One analysis attempt at a given budget. Never raises.
+
+    Split out from analyze_chunk so a truncated attempt can be retried at a larger
+    budget without duplicating the request or the error handling.
 
     The SDK already retries 429 and 5xx with exponential backoff (max_retries
-    defaults to 2), so there is no hand-rolled retry loop here. By the time a
-    RateLimitError surfaces, the retries are spent.
+    defaults to 2), so there is no hand-rolled transport retry here. By the time a
+    RateLimitError surfaces, those retries are spent.
     """
     try:
         response = await client.messages.parse(
             model=ANALYSIS_MODEL,
-            max_tokens=MAX_TOKENS_PER_CHUNK,
+            max_tokens=max_tokens,
             system=ANALYSIS_SYSTEM_PROMPT,
             thinking=THINKING_CONFIG,
             # Merges with the format the SDK derives from output_format rather than
@@ -209,7 +220,7 @@ async def analyze_chunk(
                 "chunk %s returned unparseable JSON consistent with truncation "
                 "(max_tokens=%s, thinking=%s) — review the per-chunk budget",
                 chunk.index,
-                MAX_TOKENS_PER_CHUNK,
+                max_tokens,
                 THINKING_CONFIG,
             )
             return ChunkFailure(
@@ -217,7 +228,7 @@ async def analyze_chunk(
                 reason=ChunkFailureReason.TRUNCATED,
                 user_message="This section was too long to analyze in one pass.",
                 detail=f"json_invalid during response validation at "
-                f"max_tokens={MAX_TOKENS_PER_CHUNK}: {exc}",
+                f"max_tokens={max_tokens}: {exc}",
             )
         logger.warning("chunk %s failed schema validation: %s", chunk.index, exc)
         return ChunkFailure(
@@ -227,7 +238,80 @@ async def analyze_chunk(
             detail=f"ValidationError: {exc}",
         )
 
-    return interpret_response(response, chunk.index)
+    return interpret_response(response, chunk.index, max_tokens=max_tokens)
+
+
+async def analyze_chunk(
+    client: AsyncAnthropic,
+    chunk: DocumentChunk,
+    *,
+    document_type_hint: str | None = None,
+    retry_on_truncation: bool = True,
+) -> AnalyzedChunk | ChunkFailure:
+    """Analyze one chunk, retrying once at a larger budget if it truncates.
+
+    Never raises — every failure becomes a ChunkFailure.
+
+    Truncation is the one failure worth retrying: it is a property of this request's
+    budget, not of the document or the service, so the same call at a higher ceiling
+    has a real chance of succeeding. The other failure kinds are not retried here —
+    rate limits and 5xx have already exhausted the SDK's own backoff, a refusal will
+    refuse again, and a schema violation will violate again. Retrying those would
+    just double the cost of a certain failure.
+
+    The retry runs at most once. A chunk that truncates twice is reported as a
+    skipped section, which the UI already discloses, rather than escalated into an
+    unbounded spend.
+    """
+    outcome = await _attempt_chunk(
+        client,
+        chunk,
+        max_tokens=MAX_TOKENS_PER_CHUNK,
+        document_type_hint=document_type_hint,
+    )
+
+    truncated = (
+        isinstance(outcome, ChunkFailure)
+        and outcome.reason is ChunkFailureReason.TRUNCATED
+    )
+    if not (truncated and retry_on_truncation):
+        return outcome
+
+    logger.warning(
+        "chunk %s truncated at max_tokens=%s — retrying once at %s",
+        chunk.index,
+        MAX_TOKENS_PER_CHUNK,
+        TRUNCATION_RETRY_MAX_TOKENS,
+    )
+    retried = await _attempt_chunk(
+        client,
+        chunk,
+        max_tokens=TRUNCATION_RETRY_MAX_TOKENS,
+        document_type_hint=document_type_hint,
+    )
+
+    if isinstance(retried, AnalyzedChunk):
+        logger.info(
+            "chunk %s recovered on retry at max_tokens=%s",
+            chunk.index,
+            TRUNCATION_RETRY_MAX_TOKENS,
+        )
+        return retried
+
+    # Keep the retry's reason and user-facing message — it may have failed for a
+    # different reason the second time — but record that a retry happened, so a
+    # persistent truncation is distinguishable in the logs from a one-shot one.
+    logger.error(
+        "chunk %s failed again after the truncation retry (reason=%s)",
+        chunk.index,
+        retried.reason.value,
+    )
+    return retried.model_copy(
+        update={
+            "detail": f"after truncation retry at "
+            f"max_tokens={TRUNCATION_RETRY_MAX_TOKENS}: {retried.detail}"
+        }
+    )
 
 
 def _classification_sample(chunks: list[DocumentChunk]) -> str:
@@ -331,6 +415,7 @@ async def analyze_document(
     on_progress: Callable[[int, int], None] | None = None,
     document_type_hint: str | None = None,
     classify: bool = True,
+    retry_on_truncation: bool = True,
 ) -> AnalysisRun:
     """Analyze every chunk and collect both successes and failures.
 
@@ -360,7 +445,12 @@ async def analyze_document(
     async def run_one(chunk: DocumentChunk) -> AnalyzedChunk | ChunkFailure:
         nonlocal completed
         async with semaphore:
-            outcome = await analyze_chunk(client, chunk, document_type_hint=hint)
+            outcome = await analyze_chunk(
+                client,
+                chunk,
+                document_type_hint=hint,
+                retry_on_truncation=retry_on_truncation,
+            )
         async with lock:
             completed += 1
             current = completed
