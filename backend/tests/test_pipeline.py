@@ -539,6 +539,22 @@ async def main() -> int:
         ("balanced brackets survive", "See Exhibit A [as amended]", "See Exhibit A [as amended]"),
         ("balanced braces survive", "Rent is max{8%, CPI}", "Rent is max{8%, CPI}"),
         ("only the unbalanced closer goes", "a[b]c}", "a[b]c"),
+        # The discriminating case, and the one a reviewer should look at: one
+        # string carrying BOTH a legitimate bracketed clause title and a trailing
+        # artifact. Seen live as separate halves — the model dirtied clause names
+        # in one forced run and quoted a bracketed heading in another — so the
+        # conjunction is pinned here rather than left to chance.
+        (
+            "artifact goes, bracketed clause title stays",
+            "PERMITTED SUBLEASE [AS AMENDED]}]",
+            "PERMITTED SUBLEASE [AS AMENDED]",
+        ),
+        (
+            "artifact goes, mid-sentence brackets stay",
+            "Governed by Exhibit A [as amended].}]",
+            "Governed by Exhibit A [as amended].",
+        ),
+        ("artifact goes, braces stay", "Rent is max{8%, CPI}}]", "Rent is max{8%, CPI}"),
         ("ordinary text is untouched", "Fees apply.", "Fees apply."),
         ("whitespace-only becomes empty", "   ", ""),
     ]:
