@@ -122,14 +122,16 @@ legal-doc-analyzer/
   It never guaranteed identical outputs on any model, and it is not the lever for schema
   conformance — the enforced JSON schema and system prompt above are.
 - Chunk documents at 3000 tokens with 200-token overlap to preserve clause context.
-  **KNOWN GAP, measured 2026-08-12:** the overlap frequently does not materialise.
-  `chunker._overlap_tail` carries WHOLE paragraph segments and stops at the first that
-  does not fit, so a paragraph larger than 200 tokens can never be carried. Real legal
-  paragraphs routinely exceed it — the sample lease measured a 673-token median, all 5
-  segments over budget, and consecutive chunks shared zero text. A clause split across a
-  boundary is therefore NOT currently seen whole by either chunk, which is the one thing
-  the overlap exists to guarantee. Fixing it means carrying a partial segment (a
-  sentence-level tail), which changes chunk boundaries — do not treat it as cosmetic.
+  `chunker._overlap_tail` carries whole trailing segments where they fit and a PARTIAL
+  sentence-level tail where none does. The partial path is load-bearing, not a fallback:
+  it carried nothing at all before 2026-08-12, because a paragraph bigger than the
+  200-token budget can never be carried whole and real legal paragraphs routinely are —
+  the sample lease measures a 673-token median with every segment over budget, and
+  consecutive chunks shared zero text. Do not "simplify" it back to whole segments; the
+  overlap silently becomes nothing and the one guarantee it exists for is lost.
+  The carried tail is always a STRICT suffix of the chunk. If it could be the whole
+  chunk, the next chunk opens as a copy of the previous one — which is the shape a
+  non-terminating chunker takes.
 - NEVER send the full document text in a single API call
 
 ## Expected JSON Output Schema

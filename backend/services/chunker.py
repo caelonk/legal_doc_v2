@@ -215,21 +215,95 @@ def _build_segments(
     return segments
 
 
-def _overlap_tail(segments: list[_Segment], budget: int) -> list[_Segment]:
-    """Trailing segments of a chunk that fit within the overlap budget.
+def _text_tail(text: str, budget: int, counter: TokenCounter) -> str:
+    """The longest suffix of `text` that fits in `budget`, cut at a clean boundary.
 
-    Capped at len-1 so a chunk can never be reproduced in full as the next
-    chunk's prefix.
+    Seeded from the character estimate and then verified against the real counter
+    and shrunk until it fits, the same way `_hard_slice` does — the estimate is
+    only a starting guess, and an injected counter can disagree with it by any
+    margin.
+
+    The suffix is then advanced to the first sentence boundary inside it, so the
+    carried text starts where a sentence starts. Failing that, to the first word
+    boundary. Carrying a fragment beginning mid-word would be worse than useless:
+    the model would read a broken first line and could quote it.
     """
-    if budget <= 0 or len(segments) < 2:
+    if budget <= 0 or not text.strip():
+        return ""
+
+    width = max(1, int(budget * CHARS_PER_TOKEN))
+    candidate = text[-width:]
+    while width > 1 and counter(candidate) > budget:
+        width = max(1, int(width * 0.8))
+        candidate = text[-width:]
+
+    if counter(candidate) > budget:
+        return ""
+
+    sentence_break = _SENTENCE_END.search(candidate)
+    if sentence_break:
+        trimmed = candidate[sentence_break.end() :].strip()
+        if trimmed:
+            return trimmed
+
+    word_break = candidate.find(" ")
+    if word_break != -1:
+        trimmed = candidate[word_break + 1 :].strip()
+        if trimmed:
+            return trimmed
+
+    return candidate.strip()
+
+
+def _overlap_tail(
+    segments: list[_Segment], budget: int, counter: TokenCounter
+) -> list[_Segment]:
+    """Trailing text of a chunk, up to the overlap budget.
+
+    Whole segments are carried where they fit; where none does, a PARTIAL tail of
+    the next segment is carried instead.
+
+    That partial case is the whole point. Carrying only whole segments looks
+    correct and silently does nothing on real input: `budget` is 200 tokens and
+    legal paragraphs routinely run several hundred, so the first segment tested
+    never fits, the loop breaks immediately, and consecutive chunks share no text
+    at all. Measured on a 6-page lease before this changed — median segment 673
+    tokens, all 5 over budget, zero shared text between chunks. The overlap exists
+    so a clause split across a boundary is still seen whole by one chunk, and that
+    guarantee was not being delivered on exactly the documents this product is for.
+
+    The result is always a strict suffix of the chunk, never the whole of it, so
+    the next chunk cannot be a copy of this one.
+    """
+    if budget <= 0 or not segments:
         return []
+
     tail: list[_Segment] = []
     total = 0
-    for seg in reversed(segments[1:]):
-        if total + seg.tokens > budget:
-            break
-        tail.insert(0, seg)
-        total += seg.tokens
+
+    # Whole trailing segments, never including the first — the partial pass below
+    # can still take a piece of it.
+    index = len(segments) - 1
+    while index >= 1 and total + segments[index].tokens <= budget:
+        tail.insert(0, segments[index])
+        total += segments[index].tokens
+        index -= 1
+
+    # Whatever budget is left goes to a partial tail of the segment that did not
+    # fit whole. `index` is that segment; it may be segments[0], which is fine
+    # because only a strict suffix of it is taken.
+    if index >= 0 and total < budget:
+        head = segments[index]
+        partial = _text_tail(head.text, budget - total, counter)
+        if partial and partial != head.text:
+            tail.insert(
+                0,
+                _Segment(
+                    page_number=head.page_number,
+                    text=partial,
+                    tokens=counter(_marked(head.page_number, partial)),
+                ),
+            )
     return tail
 
 
@@ -290,7 +364,7 @@ def chunk_document(
                 break
 
         chunks.append(_to_chunk(len(chunks), current, total))
-        carry = _overlap_tail(current, overlap_tokens)
+        carry = _overlap_tail(current, overlap_tokens, counter)
 
     logger.info(
         "%s: %s pages -> %s chunks (max_tokens=%s, overlap=%s)",

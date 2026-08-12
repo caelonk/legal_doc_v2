@@ -10,7 +10,12 @@ import sys
 from _harness import Results, make_document
 
 from services import chunker
-from services.chunker import DEFAULT_CHUNK_TOKENS, chunk_document, estimate_tokens
+from services.chunker import (
+    DEFAULT_CHUNK_TOKENS,
+    DEFAULT_OVERLAP_TOKENS,
+    chunk_document,
+    estimate_tokens,
+)
 
 PARA = (
     "The Receiving Party shall hold and maintain the Confidential Information in "
@@ -55,10 +60,117 @@ def main() -> int:
 
     r.section("overlap")
     shared = sum(1 for a, b in zip(chunks, chunks[1:]) if a.text[-80:] in b.text)
-    r.check("consecutive chunks share trailing text",
-            shared >= len(chunks) - 2, f"{shared}/{max(len(chunks) - 1, 1)} boundaries")
+    # EVERY boundary, not "all but one". The old tolerance let a real regression
+    # sit unnoticed: the overlap was silently empty on realistic input and this
+    # assertion still passed.
+    r.check("every consecutive pair shares trailing text",
+            shared == len(chunks) - 1, f"{shared}/{max(len(chunks) - 1, 1)} boundaries")
     no_overlap = chunk_document(make_document(pages), overlap_tokens=0)
     r.check("zero overlap is allowed", len(no_overlap) > 1)
+
+    r.section("overlap when paragraphs are LARGER than the overlap budget")
+    # The case that was broken. _overlap_tail carried whole segments only, so a
+    # paragraph bigger than the 200-token budget could never be carried and the
+    # overlap silently became nothing. Real legal paragraphs are routinely that
+    # big — the sample lease measured a 673-token median with every segment over
+    # budget — so the overlap was absent on exactly the documents this is for.
+    #
+    # Every sentence here is unique. Repetitive filler makes a substring check
+    # meaningless: "the tail of A appears in B" passes trivially when the same
+    # sentence appears fifty times, which is how a broken overlap could look fine.
+    def big_para(tag: str, sentences: int = 30) -> str:
+        return " ".join(
+            f"Clause {tag} point {i:03d} provides that the tenant shall observe "
+            f"covenant {i:03d} without exception."
+            for i in range(sentences)
+        )
+
+    fat = make_document(
+        [(n, "\n\n".join(big_para(f"p{n}s{i}") for i in range(2))) for n in range(1, 5)]
+    )
+    fat_chunks = chunk_document(fat)
+    r.check("a document of oversized paragraphs still splits", len(fat_chunks) > 1,
+            f"{len(fat_chunks)} chunks")
+
+    segment_tokens = estimate_tokens(big_para("p1s0"))
+    r.check("the fixture really does exceed the overlap budget",
+            segment_tokens > DEFAULT_OVERLAP_TOKENS,
+            f"{segment_tokens} tok vs {DEFAULT_OVERLAP_TOKENS} budget")
+
+    carried = list(zip(fat_chunks, fat_chunks[1:]))
+    hits = sum(1 for a, b in carried if a.text[-120:] in b.text)
+    r.check("every boundary carries text forward", hits == len(carried),
+            f"{hits}/{len(carried)} boundaries")
+
+    r.check("no chunk is a copy of the one before it",
+            all(a.text != b.text for a, b in carried))
+
+    r.check("carrying an overlap does not push a chunk over budget",
+            all(estimate_tokens(c.text) <= DEFAULT_CHUNK_TOKENS for c in fat_chunks),
+            f"max={max(estimate_tokens(c.text) for c in fat_chunks)}")
+
+    # Measure the carried text exactly rather than eyeballing a slice: the longest
+    # prefix of the next chunk's body that is genuinely a suffix of this one.
+    def carried_text(a, b) -> str:
+        body = b.text.split("]", 1)[1].strip() if b.text.startswith("[page ") else b.text
+        for n in range(min(len(body), len(a.text)), 0, -1):
+            if a.text.endswith(body[:n]):
+                return body[:n]
+        return ""
+
+    overlaps = [carried_text(a, b) for a, b in carried]
+    r.check("something is carried at every boundary", all(overlaps),
+            f"lengths={[len(o) for o in overlaps]}")
+    r.check("the carried tail respects the overlap budget",
+            all(estimate_tokens(o) <= DEFAULT_OVERLAP_TOKENS for o in overlaps),
+            f"max={max((estimate_tokens(o) for o in overlaps), default=0)} "
+            f"vs {DEFAULT_OVERLAP_TOKENS}")
+    r.check("the carried tail is a strict suffix, never the whole chunk",
+            all(len(o) < len(a.text) for o, (a, _) in zip(overlaps, carried)))
+
+    r.check("the page the carried text came from is citable in the next chunk",
+            all(set(b.page_numbers) & set(a.page_numbers) for a, b in carried),
+            "the carried tail belongs to a page the next chunk must be able to cite")
+
+    r.check("no source sentence is lost when the overlap is partial",
+            all(f"Clause p{n}s{i} point 000" in "\n".join(c.text for c in fat_chunks)
+                for n in range(1, 5) for i in range(2)))
+
+    # Same document, overlap disabled: the carried text must actually disappear.
+    # Unique sentences make this a real check rather than a coincidence.
+    fat_none = chunk_document(fat, overlap_tokens=0)
+    r.check("with overlap disabled, nothing is carried",
+            all(a.text[-120:] not in b.text for a, b in zip(fat_none, fat_none[1:])))
+
+    r.section("what the carried tail looks like")
+    tail_chunks = chunk_document(fat, max_tokens=1200, overlap_tokens=100)
+    if len(tail_chunks) > 1:
+        body = tail_chunks[1].text.split("]", 1)[1].strip()
+        r.check("the carried tail starts at a sentence, not mid-word",
+                body.startswith("Clause "), body[:40])
+
+    r.section("the tail is never the whole chunk")
+    # Asserted directly on _overlap_tail, because the input that reaches this is
+    # one the packer rarely builds: a leading segment with no sentence break and
+    # no space cannot be trimmed to a strict suffix, so _text_tail returns it
+    # whole. If the rest of the chunk already fits the budget, the carry would
+    # then be the ENTIRE chunk and the next chunk would open as a copy of it —
+    # the shape a non-terminating chunker takes. A document-level test does not
+    # reach that; this does.
+    unbroken = chunker._Segment(1, "X" * 300, estimate_tokens("X" * 300))
+    small = chunker._Segment(2, "bb", estimate_tokens("bb"))
+
+    r.check("_text_tail can return its whole input for an unbroken word",
+            chunker._text_tail(unbroken.text, 200, estimate_tokens) == unbroken.text,
+            "the precondition this guard exists for")
+
+    tail = chunker._overlap_tail([unbroken, small], 200, estimate_tokens)
+    carried_all = "\n\n".join(s.text for s in tail)
+    whole_chunk = "\n\n".join(s.text for s in [unbroken, small])
+    r.check("the carry is not the entire chunk", carried_all != whole_chunk,
+            f"carried {len(carried_all)} of {len(whole_chunk)} chars")
+    r.check("the untrimmable leading segment is dropped from the carry",
+            all(s.text != unbroken.text for s in tail))
 
     r.section("page attribution across a text-layer gap")
     gap = chunk_document(make_document([(1, PARA), (2, "   "), (3, PARA)]),
