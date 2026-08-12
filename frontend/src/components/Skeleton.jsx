@@ -53,6 +53,25 @@ export function ResultsSkeleton({ rows = 5 }) {
 }
 
 /**
+ * Mirrors the history list: a stack of rows, each a title line over a metadata
+ * line. Fixed at four — unlike the source pane there is no real count to work
+ * from before the response lands, and guessing high would make an empty history
+ * flash as a full one.
+ */
+export function HistorySkeleton({ rows = 4 }) {
+  return (
+    <ul aria-hidden="true" className="divide-y divide-border rounded-md border border-border bg-surface">
+      {Array.from({ length: rows }, (_, i) => (
+        <li key={i} className="px-4 py-4">
+          <Skeleton className="h-5 w-2/5" />
+          <Skeleton className="mt-2 h-3 w-3/5" />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
  * Mirrors SourcePane. The page COUNT is real — it arrives with the 202, before
  * any analysis has run — so the placeholder is the right length even though the
  * text itself only arrives with the finished result.

@@ -77,3 +77,40 @@ export async function getHealth() {
     throw toApiError(error)
   }
 }
+
+/**
+ * Saved analyses, newest first. Summary fields only — the backend deliberately
+ * does not put the document text in this payload.
+ *
+ * A failure here is never rendered as an empty history: the API answers 503 when
+ * storage is unreachable rather than returning [], and that distinction only
+ * survives if this rethrows instead of defaulting.
+ */
+export async function getHistory({ signal } = {}) {
+  try {
+    const { data } = await api.get('/api/documents/history', { signal })
+    return data
+  } catch (error) {
+    if (axios.isCancel(error)) throw error
+    throw toApiError(error)
+  }
+}
+
+/** One stored analysis, in the same shape a completed job's `result` has. */
+export async function getStoredAnalysis(id, { signal } = {}) {
+  try {
+    const { data } = await api.get(`/api/documents/history/${id}`, { signal })
+    return data
+  } catch (error) {
+    if (axios.isCancel(error)) throw error
+    throw toApiError(error)
+  }
+}
+
+export async function deleteStoredAnalysis(id) {
+  try {
+    await api.delete(`/api/documents/history/${id}`)
+  } catch (error) {
+    throw toApiError(error)
+  }
+}

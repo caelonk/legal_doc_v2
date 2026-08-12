@@ -1,7 +1,9 @@
-import { Link, Route, Routes } from 'react-router-dom'
+import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { Scale } from 'lucide-react'
 import Analysis from './pages/Analysis'
+import History from './pages/History'
 import Home from './pages/Home'
+import StoredAnalysis from './pages/StoredAnalysis'
 
 function NotFound() {
   return (
@@ -26,6 +28,22 @@ export default function App() {
             <Scale size={20} strokeWidth={1.5} aria-hidden="true" />
             <span className="font-serif text-lg">Legal Document Analyzer</span>
           </Link>
+
+          <nav aria-label="Main" className="ml-auto">
+            <NavLink
+              to="/history"
+              // aria-current is what tells a screen reader which page this is;
+              // the underline says the same thing visually rather than colour
+              // alone, which at this contrast would be the only signal.
+              className={({ isActive }) =>
+                `inline-flex min-h-6 items-center rounded-sm px-2 py-1 text-sm text-surface underline-offset-4 hover:underline ${
+                  isActive ? 'underline' : ''
+                }`
+              }
+            >
+              History
+            </NavLink>
+          </nav>
         </div>
       </header>
 
@@ -33,6 +51,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/analysis/:jobId" element={<Analysis />} />
+          <Route path="/history" element={<History />} />
+          <Route path="/history/:analysisId" element={<StoredAnalysis />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>

@@ -325,7 +325,13 @@ def main_tests() -> int:
 
     r.check("a row past the retention window is purged", stale["id"] not in remaining)
     r.check("a row inside the window survives", fresh["id"] in remaining)
-    r.check("purging happens before the insert, not instead of it", len(store.rows) == 2)
+    r.check("purging happens as well as the insert, not instead of it", len(store.rows) == 2)
+    # Order matters, and not cosmetically. save_analysis runs after the job is
+    # already COMPLETE, so anything queried before the insert is a window in which
+    # a reader opening their history does not see the analysis they just ran.
+    r.check("the insert goes first, so the row lands as early as possible",
+            [op for op, _ in store.operations] == ["insert", "delete"],
+            str([op for op, _ in store.operations]))
 
     # ------------------------------------------------------------- list
     r.section("list")

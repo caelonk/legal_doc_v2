@@ -44,6 +44,8 @@ legal-doc-analyzer/
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── UploadZone.jsx
+│   │   │   ├── AnalysisView.jsx      # The finished view. Shared by a live job and a
+│   │   │   │                         # stored one — same payload, one renderer.
 │   │   │   ├── AnalysisProgress.jsx  # Renders stage_message verbatim from the API
 │   │   │   ├── DocumentHeader.jsx    # Owns the page h1 — OUTSIDE the tabs, see note
 │   │   │   ├── SourcePane.jsx        # Extracted text + the citation jump target
@@ -55,7 +57,9 @@ legal-doc-analyzer/
 │   │   │   └── RiskBadge.jsx
 │   │   ├── pages/
 │   │   │   ├── Home.jsx
-│   │   │   └── Analysis.jsx
+│   │   │   ├── Analysis.jsx
+│   │   │   ├── History.jsx           # Saved analyses. Counts only — no findings text
+│   │   │   └── StoredAnalysis.jsx    # One saved analysis, via AnalysisView
 │   │   ├── hooks/
 │   │   │   ├── useAnalysisJob.js     # Polls a job to a terminal state
 │   │   │   ├── useMediaQuery.js      # Picks the split-pane vs tabbed layout
@@ -236,6 +240,13 @@ DELETE /api/documents/history/{id}        remove one
   `routers/documents.py` ALSO wraps the save call: without that, a raise would reach the
   background task's handler and call `job.fail()` on a completed analysis. Both layers are
   load-bearing and both are mutation-tested.
+- The save runs AFTER the job is reported COMPLETE, so there is a short window (~1s, one
+  insert round trip) where a finished analysis is not yet in history. That ordering is
+  deliberate — the job must be readable the instant it completes — but it is why the INSERT
+  goes before the retention purge rather than after: housekeeping does not get to widen it.
+- The history LIST renders counts only, never a severity or an explanation. It has no page
+  reference to attach one to, and a conclusion without its provenance is the thing
+  `.claude/rules/ai-output.md` forbids. Open the analysis to see claims.
 - Retention is `config.HISTORY_RETENTION_DAYS`, swept on write by `purge_expired` (the same
   pattern as `JobStore._evict_expired` — no background task, no pg_cron). That number is
   USER-FACING: `/api/health` reports it and `UploadZone.jsx` interpolates it. Change the

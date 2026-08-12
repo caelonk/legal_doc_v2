@@ -29,6 +29,7 @@ Each test maps to a rule that was previously only prose in `CLAUDE.md`,
 | `review.test.jsx` | Marking a finding reviewed never hides its explanation or its severity badge; the count stays honest while filtered; hidden findings are disclosed, not silently absent; the navigator shares the state; marks clear when the job changes |
 | `skeleton.test.jsx` | Placeholders instead of a spinner while analysing, `aria-hidden` so they are not announced, determinate progress still present, no findings table implied before there are findings |
 | `upload.test.jsx` | The confidentiality disclosure names storage, never claims the document is not saved while it is, states the retention the SERVER reports rather than a hardcoded number, and assumes storage while health is still loading |
+| `history.test.jsx` | An in-flight request never renders as an empty history; an unreachable store is reported rather than shown as "no documents"; deletion needs confirmation and the row survives a failed delete; a stored analysis renders through the same view a live one does, and a load error renders no findings |
 
 Every one of these was verified by mutation: break the rule in the source, confirm the
 matching test goes red, restore. A test that has never failed is not evidence.
@@ -70,3 +71,15 @@ Run against `npm run dev` with the backend up, on a completed analysis:
 
 Playwright would automate all four and is the natural next addition. It was not worth a
 browser binary for this pass.
+
+### What the checklist has actually caught
+
+Run against the history UI on 2026-08-12, and it earned its place immediately: the
+filename link in each history row — the primary control on the page, the thing you click
+to open an analysis — measured **118×17px**. Every jsdom test passed. The link had no
+height beyond its 17px line box, and SC 2.5.8's exception for inline links does not cover
+a standalone row title. Fixed with `inline-flex min-h-6`, the same treatment
+`PageReference` needed for the same reason.
+
+That is twice now that the 24px rule has been broken by a control that looked fine in the
+markup. Measure after building a new interactive surface; do not assume.

@@ -107,6 +107,29 @@ export function analysisResult(overrides = {}) {
   }
 }
 
+/**
+ * One row of GET /api/documents/history.
+ *
+ * Summary fields ONLY — mirrors models.schemas.HistoryEntry, which deliberately
+ * omits the analysis and the document text. A fixture carrying `result` here
+ * would let a test pass against a list page that renders findings it will never
+ * actually receive.
+ */
+export function historyEntry(overrides = {}) {
+  return {
+    id: '7f82989b-c00f-48dd-9c37-05f9bf03dfaa',
+    created_at: '2026-08-12T23:02:49.842308Z',
+    filename: 'sample_lease.pdf',
+    page_count: 6,
+    pages_with_text: 5,
+    document_type: 'Commercial Lease',
+    risk_flag_count: 17,
+    missing_clause_count: 2,
+    skipped_count: 0,
+    ...overrides,
+  }
+}
+
 export function jobState(overrides = {}) {
   return {
     job_id: 'abc123',
