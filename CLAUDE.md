@@ -39,16 +39,19 @@ legal-doc-analyzer/
 │   │   ├── components/
 │   │   │   ├── UploadZone.jsx
 │   │   │   ├── AnalysisProgress.jsx  # Renders stage_message verbatim from the API
+│   │   │   ├── DocumentHeader.jsx    # Owns the page h1 — OUTSIDE the tabs, see note
 │   │   │   ├── SourcePane.jsx        # Extracted text + the citation jump target
 │   │   │   ├── ResultsPanel.jsx
+│   │   │   ├── ClauseNavigator.jsx   # Jump list in DOCUMENT order, not severity
 │   │   │   ├── PageReference.jsx     # The provenance affordance
-│   │   │   ├── ClauseNavigator.jsx   # NOT BUILT — pass 2
+│   │   │   ├── Tabs.jsx              # Styled Radix Tabs wrapper
 │   │   │   └── RiskBadge.jsx
 │   │   ├── pages/
 │   │   │   ├── Home.jsx
 │   │   │   └── Analysis.jsx
 │   │   ├── hooks/
-│   │   │   └── useAnalysisJob.js     # Polls a job to a terminal state
+│   │   │   ├── useAnalysisJob.js     # Polls a job to a terminal state
+│   │   │   └── useMediaQuery.js      # Picks the split-pane vs tabbed layout
 │   │   ├── lib/
 │   │   │   └── severity.js           # Ordering + counts; see the rank note inside
 │   │   ├── tests/                    # Vitest + jsdom; npm test. README states what
@@ -242,7 +245,11 @@ npm install
 # Runtime: axios, react-router-dom, lucide-react, @fontsource-variable/* (self-hosted
 # fonts — no third-party request from a page showing confidential contract text).
 # Build: vite, @vitejs/plugin-react, tailwindcss v3, postcss, autoprefixer.
-# Test: vitest, jsdom, @testing-library/react, @testing-library/jest-dom.
+# Test: vitest, jsdom, @testing-library/react, @testing-library/jest-dom,
+#       @testing-library/user-event (Radix triggers fire on mousedown/focus, not
+#       click — element.click() alone silently does nothing).
+# UI:   @radix-ui/react-tabs, for the roving tabindex and ARIA wiring the
+#       findings/navigator/document tabs need. Added per component, as intended.
 # Tailwind stays on v3: docs and .claude/rules/frontend-ui.md both key off
 # frontend/tailwind.config.js, and v4's CSS-first setup has no such file.
 # Radix primitives are pulled in per-component by the shadcn/ui CLI when a component

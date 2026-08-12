@@ -1,8 +1,13 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
-import { afterEach } from 'vitest'
+import { afterEach, beforeEach } from 'vitest'
+import { installMatchMedia, setWideViewport } from './viewport'
 
 afterEach(cleanup)
+
+// Narrow by default, so a test that cares about the desktop layout has to say so.
+installMatchMedia()
+beforeEach(() => setWideViewport(false))
 
 // jsdom implements no layout and no scrolling, so Element.scrollTo does not
 // exist and throws "Not implemented" when called. SourcePane calls it when a

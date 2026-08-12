@@ -3,6 +3,8 @@ import {
   collectMissingClauses,
   collectRiskFlags,
   countBySeverity,
+  partitionByLocated,
+  sortByDocumentPosition,
   sortBySeverity,
 } from '../lib/severity'
 import { analysisResult, missingClause, riskFlag, section } from './fixtures'
@@ -46,6 +48,63 @@ describe('sortBySeverity', () => {
     const input = [flag('LOW', 1), flag('HIGH', 1)]
     sortBySeverity(input)
     expect(input.map((f) => f.severity)).toEqual(['LOW', 'HIGH'])
+  })
+})
+
+describe('sortByDocumentPosition', () => {
+  const at = (page, chunkIndex = 0) => ({ ...riskFlag({ page_reference: page }), chunkIndex })
+
+  it('orders by page ascending', () => {
+    const sorted = sortByDocumentPosition([at(9), at(2), at(5)])
+    expect(sorted.map((f) => f.page_reference)).toEqual([2, 5, 9])
+  })
+
+  it('ignores severity entirely', () => {
+    // The navigator's whole purpose is the other axis. If severity leaked into
+    // this ordering it would become a second copy of the risk table.
+    const high = { ...riskFlag({ severity: 'HIGH', page_reference: 9 }), chunkIndex: 0 }
+    const low = { ...riskFlag({ severity: 'LOW', page_reference: 1 }), chunkIndex: 0 }
+    expect(sortByDocumentPosition([high, low]).map((f) => f.severity)).toEqual(['LOW', 'HIGH'])
+  })
+
+  it('falls back to section order within a page', () => {
+    const sorted = sortByDocumentPosition([at(3, 2), at(3, 0), at(3, 1)])
+    expect(sorted.map((f) => f.chunkIndex)).toEqual([0, 1, 2])
+  })
+
+  it('puts unlocated findings last', () => {
+    const sorted = sortByDocumentPosition([at(null), at(4), at(1)])
+    expect(sorted.map((f) => f.page_reference)).toEqual([1, 4, null])
+  })
+
+  it('does not mutate its input', () => {
+    const input = [at(9), at(1)]
+    sortByDocumentPosition(input)
+    expect(input.map((f) => f.page_reference)).toEqual([9, 1])
+  })
+})
+
+describe('partitionByLocated', () => {
+  it('separates findings with a page from those without', () => {
+    const { located, unlocated } = partitionByLocated([
+      riskFlag({ page_reference: 3 }),
+      riskFlag({ page_reference: null }),
+      riskFlag({ page_reference: undefined }),
+    ])
+    expect(located).toHaveLength(1)
+    expect(unlocated).toHaveLength(2)
+  })
+
+  it('keeps page 0 on the located side', () => {
+    // Guards the falsy-check bug: 0 is a page number, not a missing one.
+    const { located } = partitionByLocated([riskFlag({ page_reference: 0 })])
+    expect(located).toHaveLength(1)
+  })
+
+  it('loses nothing', () => {
+    const flags = [riskFlag({ page_reference: 1 }), riskFlag({ page_reference: null })]
+    const { located, unlocated } = partitionByLocated(flags)
+    expect(located.length + unlocated.length).toBe(flags.length)
   })
 })
 

@@ -58,6 +58,36 @@ export function sortBySeverity(flags) {
 }
 
 /**
+ * Document order: page ascending, unlocated findings last.
+ *
+ * Deliberately a DIFFERENT order from sortBySeverity. The risk table answers
+ * "what is the worst thing in here", so it leads with severity. ClauseNavigator
+ * answers "where are the problems as I read through", so it follows the document.
+ * Presenting both in the same order would make the navigator redundant.
+ *
+ * Unlocated findings still sort last rather than being dropped — they are listed
+ * under their own heading, because a finding with no page is still a finding.
+ */
+export function sortByDocumentPosition(flags) {
+  return [...flags].sort((a, b) => {
+    const pageA = a.page_reference ?? Number.MAX_SAFE_INTEGER
+    const pageB = b.page_reference ?? Number.MAX_SAFE_INTEGER
+    if (pageA !== pageB) return pageA - pageB
+    // Same page: fall back to the order the analyzer reported them in, which
+    // follows position within the section.
+    return a.chunkIndex - b.chunkIndex
+  })
+}
+
+/** Findings the parser could place, and those it could not. */
+export function partitionByLocated(flags) {
+  return {
+    located: flags.filter((f) => f.page_reference !== null && f.page_reference !== undefined),
+    unlocated: flags.filter((f) => f.page_reference === null || f.page_reference === undefined),
+  }
+}
+
+/**
  * Counts per severity. Shown as "3 high · 5 medium · 2 low" — never collapsed
  * into one overall document score, which would invite reliance on a figure
  * nothing in the pipeline validates (docs/ui-patterns.md §3).

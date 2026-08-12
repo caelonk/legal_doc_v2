@@ -24,42 +24,6 @@ function Disclosure() {
   )
 }
 
-function DocumentMeta({ document, documentTypeHint }) {
-  const partial = document.pages_with_text < document.page_count
-  return (
-    <section className="rounded-md border border-border bg-surface p-4">
-      {/* h1 for the completed view: the document IS what this page is about, and
-          the progress view uses h1 for the same string. Starting at h2 would skip
-          a level and leave the page with no top-level heading. */}
-      <h1 className="font-serif text-xl text-ink">{document.filename}</h1>
-      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-        <dt className="text-ink-muted">Pages</dt>
-        <dd className="font-mono text-ink">
-          {document.page_count}
-          {partial && (
-            <span className="ml-2 font-sans text-xs text-ink-subtle">
-              ({document.pages_with_text} with readable text)
-            </span>
-          )}
-        </dd>
-
-        <dt className="text-ink-muted">Sections analyzed</dt>
-        <dd className="font-mono text-ink">{document.chunk_count}</dd>
-
-        {documentTypeHint && (
-          <>
-            <dt className="text-ink-muted">Identified as</dt>
-            <dd className="text-ink">{documentTypeHint}</dd>
-          </>
-        )}
-
-        <dt className="text-ink-muted">Text extracted by</dt>
-        <dd className="font-mono text-xs text-ink-subtle">{document.extraction_method}</dd>
-      </dl>
-    </section>
-  )
-}
-
 /**
  * Sections that could not be analyzed. Disclosed, never swallowed — silent partial
  * results are a correctness failure, not a cosmetic one
@@ -246,8 +210,10 @@ export default function ResultsPanel({ result, onNavigate }) {
   return (
     <div className="h-full overflow-y-auto bg-surface-sunken p-4 lg:p-6">
       <div className="space-y-6">
+        {/* Document identity lives in DocumentHeader, outside the tabs — see the
+            note there. This panel is one view among several and must not own the
+            page's h1. */}
         <Disclosure />
-        <DocumentMeta document={result.document} documentTypeHint={result.document_type_hint} />
         <SkippedSections skipped={result.skipped} />
         <RiskFlagTable flags={flags} onNavigate={onNavigate} />
         <MissingClauseList clauses={missing} />

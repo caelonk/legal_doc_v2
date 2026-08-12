@@ -148,14 +148,6 @@ describe('skipped sections', () => {
   })
 })
 
-describe('document metadata', () => {
-  it('discloses when some pages had no readable text', () => {
-    renderPanel(analysisResult())
-    expect(screen.getByText(/5 with readable text/i)).toBeInTheDocument()
-  })
-
-  it('shows the classification hint that conditioned the findings', () => {
-    renderPanel(analysisResult({ document_type_hint: 'Commercial Lease' }))
-    expect(screen.getByText('Commercial Lease')).toBeInTheDocument()
-  })
-})
+// Document metadata moved to DocumentHeader, which sits outside the tabs so the
+// page keeps its h1 whichever view is open. Its assertions live in
+// document-header.test.jsx.

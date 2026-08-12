@@ -21,11 +21,21 @@ Each test maps to a rule that was previously only prose in `CLAUDE.md`,
 | `severity.test.js` | HIGH before MEDIUM before LOW (never alphabetical); unlocated findings sort **last within** their severity, not first; no de-duplication across the chunk overlap |
 | `components.test.jsx` | `RiskBadge` always renders a text label and an icon, and has no prop that can suppress either; `PageReference` renders `Source not located` for a null page and never guesses |
 | `results-panel.test.jsx` | Disclosure always present and not dismissible; per-severity counts rather than an aggregate score; skipped sections disclosed with correct singular/plural pages; `ChunkFailure.detail` never rendered; risk flags and missing clauses kept in separate tables |
-| `a11y-structure.test.jsx` | Exactly one `h1`, no skipped heading level, every table has `th[scope="col"]`, every button has an accessible name |
+| `a11y-structure.test.jsx` | Exactly one `h1` and no skipped level, **per layout and per open tab**; every table has `th[scope="col"]`; every button has an accessible name |
 | `analysis-page.test.jsx` | A live region exists in **every** branch — loading, running, complete, failed, error; a FAILED run renders no findings table |
+| `clause-navigator.test.jsx` | Document order rather than severity order; a text severity label on every entry; unlocated findings listed under their own heading and not offered as dead jumps |
+| `layout-tabs.test.jsx` | Two tabs and a permanently visible source pane when wide, three tabs when narrow; following a citation on a narrow viewport switches to the document tab; arrow keys, `End`, and single-tab-stop behaviour |
+| `document-header.test.jsx` | The page `h1`; partial-extraction disclosure; the classification hint that conditioned every finding |
 
 Every one of these was verified by mutation: break the rule in the source, confirm the
 matching test goes red, restore. A test that has never failed is not evidence.
+
+## Driving the UI
+
+Use `@testing-library/user-event`, not `element.click()`. Radix activates a tab on
+**mousedown and focus**, so a lone synthetic `click` event changes nothing and the test
+fails against behaviour no real pointer or keyboard produces. `user-event` dispatches the
+full sequence, which is also what makes the keyboard assertions possible.
 
 ## What is NOT covered, and why
 
