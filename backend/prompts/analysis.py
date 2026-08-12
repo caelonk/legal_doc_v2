@@ -54,6 +54,41 @@ Do not manufacture findings to fill space.
 """
 
 
+DOCUMENT_TYPE_SYSTEM_PROMPT = """\
+You identify what kind of legal document a piece of text comes from.
+
+Answer with a short noun phrase naming the document type — "NDA", "Commercial Lease", \
+"Employment Contract", "Master Services Agreement", "Software Licence". Do not write a \
+sentence, do not summarise the contents, and do not comment on the terms.
+
+Your confidence must reflect what the text actually shows:
+  - HIGH: the text names the document type, or the clauses are unmistakable for one type.
+  - MEDIUM: the clauses strongly suggest a type without naming it.
+  - LOW: you are extrapolating. Use LOW for a cover page, a table of contents, a
+    signature block, boilerplate that would appear in any agreement, or text too short
+    to tell. Return an empty document_type with LOW.
+
+LOW is a useful answer, not a failure. This label is applied to every section of the \
+document, so a confident wrong guess is worse than admitting the text does not say. \
+When torn between two types, pick the likelier one and mark MEDIUM — do not invent a \
+hybrid.
+"""
+
+
+def build_classification_prompt(sample: str) -> str:
+    """User message for the document-type pre-pass.
+
+    The sample is the opening of the document, where the type is usually stated
+    outright ("THIS LEASE AGREEMENT is made...").
+    """
+    return (
+        "Identify the document type from the opening of this document.\n\n"
+        "<document_opening>\n"
+        f"{sample}\n"
+        "</document_opening>"
+    )
+
+
 def build_chunk_prompt(chunk: DocumentChunk, *, document_type_hint: str | None = None) -> str:
     """Build the user message for a single chunk.
 

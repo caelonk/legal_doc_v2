@@ -31,6 +31,27 @@ THINKING_CONFIG: dict[str, str] = {"type": "adaptive"}
 # clauses; "low" keeps the spend modest.
 EFFORT = "low"
 
+# Document-type classification pre-pass ------------------------------------
+# One cheap Haiku call classifies the document before the Sonnet chunks run, so
+# every chunk knows what kind of document it is judging "missing" clauses against.
+# The payload is two short fields.
+CLASSIFICATION_MAX_TOKENS = 200
+
+# Roughly 1700 tokens of opening text — enough to cover a title page plus the
+# opening recitals, which is where the document type is actually stated.
+CLASSIFICATION_SAMPLE_CHARS = 6000
+
+# NOTE ON `thinking` FOR THE CLASSIFICATION CALL
+# CLAUDE.md says to always set `thinking` explicitly. That rule exists because the
+# default varies by model and changed between Sonnet 4.6 and Sonnet 5. It does not
+# extend to LIGHTWEIGHT_MODEL: Haiku 4.5 predates adaptive thinking, and on pre-4.6
+# models omitting `thinking` unambiguously means "no thinking". So the classifier
+# omits it deliberately.
+#   - Do NOT send {"type": "adaptive"} here — that is a 4.6+ mode.
+#   - {"type": "disabled"} may well be accepted, but it is unverified against the
+#     live API for this model, and omission is definitively safe.
+#   - Do NOT send output_config={"effort": ...} — effort errors on Haiku 4.5.
+
 # Chunking -----------------------------------------------------------------
 CHUNK_TOKENS = 3000
 OVERLAP_TOKENS = 200

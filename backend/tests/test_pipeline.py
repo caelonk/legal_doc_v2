@@ -13,9 +13,21 @@ import asyncio
 import sys
 import types
 
+import anthropic
+import httpx
+
 from _harness import Results, make_mixed_pdf
 
-from models.schemas import AnalyzedChunk, ChunkAnalysis, ChunkFailure, DocumentChunk
+from config import CLASSIFICATION_SAMPLE_CHARS
+
+from models.schemas import (
+    AnalyzedChunk,
+    ChunkAnalysis,
+    ChunkFailure,
+    Confidence,
+    DocumentChunk,
+    DocumentTypeGuess,
+)
 from prompts.analysis import build_chunk_prompt
 from services import analyzer
 from services.chunker import chunk_document_async
@@ -41,25 +53,50 @@ def stub_response(stop_reason, parsed):
     return types.SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed)
 
 
+WEAK_GUESS = DocumentTypeGuess(document_type="", confidence=Confidence.LOW)
+STRONG_GUESS = DocumentTypeGuess(document_type="Commercial Lease", confidence=Confidence.HIGH)
+
+
 class _FakeMessages:
-    def __init__(self, script):
-        self.script = script
-        self.calls = 0
+    """Dispatches on output_format so classification and chunk calls stay separable."""
+
+    def __init__(self, chunk_script, classification):
+        self.chunk_script = chunk_script
+        self.classification = classification
+        self.chunk_calls = 0
         self.seen: list[dict] = []
 
     async def parse(self, **kwargs):
         self.seen.append(kwargs)
-        index = self.calls
-        self.calls += 1
         await asyncio.sleep(0)
-        return self.script[index]
+        if kwargs.get("output_format") is DocumentTypeGuess:
+            if isinstance(self.classification, Exception):
+                raise self.classification
+            return self.classification
+        index = self.chunk_calls
+        self.chunk_calls += 1
+        return self.chunk_script[index]
+
+    @property
+    def chunk_requests(self) -> list[dict]:
+        return [k for k in self.seen if k.get("output_format") is ChunkAnalysis]
+
+    @property
+    def classification_requests(self) -> list[dict]:
+        return [k for k in self.seen if k.get("output_format") is DocumentTypeGuess]
 
 
 class FakeClient:
-    """Stands in for AsyncAnthropic — records the request, returns a scripted reply."""
+    """Stands in for AsyncAnthropic — records requests, returns scripted replies.
 
-    def __init__(self, script):
-        self.messages = _FakeMessages(script)
+    Classification defaults to a LOW-confidence guess, i.e. no hint, so tests that
+    are not about classification see unhinted chunk prompts.
+    """
+
+    def __init__(self, chunk_script, classification=None):
+        if classification is None:
+            classification = stub_response("end_turn", WEAK_GUESS)
+        self.messages = _FakeMessages(chunk_script, classification)
 
 
 def build_contract_pdf() -> bytes:
@@ -126,7 +163,7 @@ async def main() -> int:
     script = [stub_response("end_turn", GOOD) for _ in chunks]
     client = FakeClient(script)
     run = await analyzer.analyze_document(list(chunks), client=client, max_concurrency=2)
-    sent = client.messages.seen[0]
+    sent = client.messages.chunk_requests[0]
     r.check("model pinned to sonnet 5", sent["model"] == "claude-sonnet-5", sent["model"])
     r.check("max_tokens is 4000", sent["max_tokens"] == 4000, str(sent["max_tokens"]))
     r.check("thinking set explicitly", sent["thinking"] == {"type": "adaptive"}, str(sent["thinking"]))
@@ -154,6 +191,101 @@ async def main() -> int:
     r.check("truncation and refusal kept distinct", reasons == ["REFUSED", "TRUNCATED"], str(reasons))
     r.check("user messages carry no diagnostics",
             all("stop_reason" not in f.user_message for f in run.failures))
+
+    r.section("document-type classification pre-pass")
+    three = [DocumentChunk(index=i, text=f"clause text {i}", page_numbers=[i + 1])
+             for i in range(3)]
+
+    def fresh(classification=None):
+        return FakeClient([stub_response("end_turn", GOOD) for _ in three], classification)
+
+    # Confident guess reaches every chunk.
+    client = fresh(stub_response("end_turn", STRONG_GUESS))
+    await analyzer.analyze_document(three, client=client, max_concurrency=3)
+    reqs = client.messages.chunk_requests
+    prompts = [q["messages"][0]["content"] for q in reqs]
+    r.check("classification call was made", len(client.messages.classification_requests) == 1)
+    r.check("hint reaches every chunk",
+            all("Commercial Lease" in p for p in prompts), f"{len(prompts)} prompts")
+    r.check("hint is hedged, not asserted",
+            all("appeared to be" in p for p in prompts))
+
+    cls_req = client.messages.classification_requests[0]
+    r.check("classifier uses the lightweight model",
+            cls_req["model"] == "claude-haiku-4-5-20251001", cls_req["model"])
+    r.check("chunks still use the analysis model", reqs[0]["model"] == "claude-sonnet-5")
+    r.check("classifier sends no effort", "output_config" not in cls_req)
+    r.check("classifier sends no thinking", "thinking" not in cls_req)
+    r.check("classifier sends no sampling params",
+            not any(k in cls_req for k in ("temperature", "top_p", "top_k")))
+    r.check("classifier bound to DocumentTypeGuess",
+            cls_req["output_format"] is DocumentTypeGuess)
+
+    # Weak guess must not propagate.
+    client = fresh(stub_response("end_turn", WEAK_GUESS))
+    await analyzer.analyze_document(three, client=client, max_concurrency=3)
+    r.check("LOW confidence produces no hint",
+            not any("appeared to be" in q["messages"][0]["content"]
+                    for q in client.messages.chunk_requests))
+
+    # A confident-but-empty type is still no answer.
+    client = fresh(stub_response("end_turn",
+                                 DocumentTypeGuess(document_type="  ",
+                                                   confidence=Confidence.HIGH)))
+    await analyzer.analyze_document(three, client=client, max_concurrency=3)
+    r.check("blank type produces no hint",
+            not any("appeared to be" in q["messages"][0]["content"]
+                    for q in client.messages.chunk_requests))
+
+    # Truncated classification is not trusted.
+    client = fresh(stub_response("max_tokens", STRONG_GUESS))
+    await analyzer.analyze_document(three, client=client, max_concurrency=3)
+    r.check("truncated classification produces no hint",
+            not any("Commercial Lease" in q["messages"][0]["content"]
+                    for q in client.messages.chunk_requests))
+
+    # Classification failure must never fail the document.
+    boom = anthropic.APIStatusError(
+        "boom", response=httpx.Response(500, request=httpx.Request("POST", "https://x")),
+        body=None,
+    )
+    client = fresh(boom)
+    run = await analyzer.analyze_document(three, client=client, max_concurrency=3)
+    r.check("classification failure does not fail the run", len(run.analyzed) == 3)
+    r.check("classification failure yields no hint",
+            not any("appeared to be" in q["messages"][0]["content"]
+                    for q in client.messages.chunk_requests))
+
+    # Opt-outs.
+    client = fresh(stub_response("end_turn", STRONG_GUESS))
+    await analyzer.analyze_document(three, client=client, classify=False)
+    r.check("classify=False skips the call",
+            not client.messages.classification_requests)
+
+    client = fresh(stub_response("end_turn", STRONG_GUESS))
+    await analyzer.analyze_document(three, client=client, document_type_hint="Sublease")
+    r.check("explicit hint skips classification",
+            not client.messages.classification_requests)
+    r.check("explicit hint is the one used",
+            all("Sublease" in q["messages"][0]["content"]
+                for q in client.messages.chunk_requests))
+
+    r.section("classifier standalone contract")
+    r.check("no chunks yields no classification",
+            await analyzer.classify_document_type(fresh(), []) is None)
+    blank = [DocumentChunk(index=0, text="   ", page_numbers=[1])]
+    r.check("blank text yields no classification",
+            await analyzer.classify_document_type(fresh(), blank) is None)
+    sample = analyzer._classification_sample(
+        [DocumentChunk(index=i, text="X" * 5000, page_numbers=[i + 1]) for i in range(4)]
+    )
+    r.check("sample is capped at the configured budget",
+            len(sample) <= CLASSIFICATION_SAMPLE_CHARS + 8, f"{len(sample)} chars")
+    r.check("sample draws from more than the first chunk",
+            analyzer._classification_sample(
+                [DocumentChunk(index=0, text="AAA", page_numbers=[1]),
+                 DocumentChunk(index=1, text="BBB", page_numbers=[2])]
+            ) == "AAA\n\nBBB")
 
     r.section("interpret_response branches")
     for label, resp, expected in [

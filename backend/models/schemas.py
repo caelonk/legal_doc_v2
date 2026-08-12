@@ -136,6 +136,47 @@ class ChunkAnalysis(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Document-type classification. A separate, internal structured-output contract
+# used by the cheap pre-pass — NOT part of the documented analyzer output schema
+# in CLAUDE.md, and never rendered to the user.
+# --------------------------------------------------------------------------
+
+
+class Confidence(str, Enum):
+    """How sure the classifier is.
+
+    Ordinal, not numeric — same reasoning as RiskLevel. Kept as its own enum
+    because "how confident is this guess" and "how severe is this risk" are
+    different quantities that should not be interchangeable in a type signature.
+    """
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class DocumentTypeGuess(BaseModel):
+    """Result of the document-type pre-pass.
+
+    `confidence` exists so a weak guess can be discarded rather than propagated.
+    A hint is applied to EVERY chunk, so a wrong one biases the whole run in a
+    single direction — worse than the independent errors we would get with no
+    hint at all. LOW is treated as "no answer".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: str = Field(
+        description="Short noun phrase, e.g. 'NDA', 'Commercial Lease', "
+        "'Employment Contract'. Empty string if the sample is uninformative."
+    )
+    confidence: Confidence = Field(
+        description="LOW when the sample is a cover page, table of contents, or "
+        "otherwise does not identify the document type."
+    )
+
+
+# --------------------------------------------------------------------------
 # Pipeline models. These are internal — they are NOT part of the analyzer's
 # API output contract and are not sent to Claude.
 # --------------------------------------------------------------------------

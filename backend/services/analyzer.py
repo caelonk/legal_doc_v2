@@ -21,16 +21,31 @@ import anthropic
 from anthropic import AsyncAnthropic
 from pydantic import ValidationError
 
-from config import ANALYSIS_MODEL, EFFORT, MAX_TOKENS_PER_CHUNK, THINKING_CONFIG
+from config import (
+    ANALYSIS_MODEL,
+    CLASSIFICATION_MAX_TOKENS,
+    CLASSIFICATION_SAMPLE_CHARS,
+    EFFORT,
+    LIGHTWEIGHT_MODEL,
+    MAX_TOKENS_PER_CHUNK,
+    THINKING_CONFIG,
+)
 from models.schemas import (
     AnalysisRun,
     AnalyzedChunk,
     ChunkAnalysis,
     ChunkFailure,
     ChunkFailureReason,
+    Confidence,
     DocumentChunk,
+    DocumentTypeGuess,
 )
-from prompts.analysis import ANALYSIS_SYSTEM_PROMPT, build_chunk_prompt
+from prompts.analysis import (
+    ANALYSIS_SYSTEM_PROMPT,
+    DOCUMENT_TYPE_SYSTEM_PROMPT,
+    build_chunk_prompt,
+    build_classification_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +192,105 @@ async def analyze_chunk(
     return interpret_response(response, chunk.index)
 
 
+def _classification_sample(chunks: list[DocumentChunk]) -> str:
+    """Opening text of the document, up to the sample budget.
+
+    Drawn across leading chunks rather than from chunk 0 alone, so a thin cover
+    page does not become the entire sample.
+    """
+    parts: list[str] = []
+    used = 0
+    for chunk in chunks:
+        remaining = CLASSIFICATION_SAMPLE_CHARS - used
+        if remaining <= 0:
+            break
+        parts.append(chunk.text[:remaining])
+        used += min(len(chunk.text), remaining)
+    return "\n\n".join(parts)
+
+
+async def classify_document_type(
+    client: AsyncAnthropic,
+    chunks: list[DocumentChunk],
+    *,
+    model: str = LIGHTWEIGHT_MODEL,
+) -> str | None:
+    """Best-effort document-type classification for the analysis hint.
+
+    Returns None rather than raising, always. This is an optimisation: without a
+    hint the analysis still runs, so a classification failure must never fail the
+    document. Every exit that is not a confident answer returns None.
+
+    Note the request shape differs from the analysis call — no `effort` (errors on
+    Haiku 4.5) and no `thinking` (see the note in config.py).
+    """
+    if not chunks:
+        return None
+
+    sample = _classification_sample(chunks)
+    if not sample.strip():
+        return None
+
+    try:
+        response = await client.messages.parse(
+            model=model,
+            max_tokens=CLASSIFICATION_MAX_TOKENS,
+            system=DOCUMENT_TYPE_SYSTEM_PROMPT,
+            output_format=DocumentTypeGuess,
+            messages=[{"role": "user", "content": build_classification_prompt(sample)}],
+        )
+    except (
+        anthropic.RateLimitError,
+        anthropic.APIConnectionError,
+        anthropic.APIStatusError,
+        ValidationError,
+    ) as exc:
+        logger.warning(
+            "document-type classification failed (%s); continuing without a hint: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    if response.stop_reason not in (None, "end_turn", "stop_sequence"):
+        logger.info(
+            "document-type classification did not finish cleanly (stop_reason=%s); "
+            "continuing without a hint",
+            response.stop_reason,
+        )
+        return None
+
+    guess = response.parsed_output
+    if guess is None:
+        logger.info("document-type classification returned no parsed output")
+        return None
+
+    if guess.confidence is Confidence.LOW or not guess.document_type.strip():
+        # A weak guess is applied to EVERY chunk, so it correlates errors across
+        # the whole run. No hint is better than a bad one.
+        logger.info(
+            "document-type classification too weak to use (confidence=%s, type=%r)",
+            guess.confidence.value,
+            guess.document_type,
+        )
+        return None
+
+    logger.info(
+        "document classified as %r (confidence=%s)",
+        guess.document_type,
+        guess.confidence.value,
+    )
+    return guess.document_type.strip()
+
+
 async def analyze_document(
     chunks: list[DocumentChunk],
     *,
     client: AsyncAnthropic,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     on_progress: Callable[[int, int], None] | None = None,
+    document_type_hint: str | None = None,
+    classify: bool = True,
 ) -> AnalysisRun:
     """Analyze every chunk and collect both successes and failures.
 
@@ -190,9 +298,19 @@ async def analyze_document(
     determinate count it needs for "Analyzing 4 of 11 sections" rather than an
     opaque spinner. Completion order is not document order — the count is
     meaningful, the index is not.
+
+    A cheap classification pre-pass runs first so every chunk knows what kind of
+    document it is judging missing clauses against. It is awaited before the fan-out
+    because the hint has to reach all chunks; it costs one small Haiku call rather
+    than serialising an expensive Sonnet one. Pass `document_type_hint` to supply the
+    answer directly, or `classify=False` to skip it.
     """
     if not chunks:
         return AnalysisRun(analyzed=[], failures=[])
+
+    hint = document_type_hint
+    if hint is None and classify:
+        hint = await classify_document_type(client, chunks)
 
     semaphore = asyncio.Semaphore(max_concurrency)
     completed = 0
@@ -202,7 +320,7 @@ async def analyze_document(
     async def run_one(chunk: DocumentChunk) -> AnalyzedChunk | ChunkFailure:
         nonlocal completed
         async with semaphore:
-            outcome = await analyze_chunk(client, chunk)
+            outcome = await analyze_chunk(client, chunk, document_type_hint=hint)
         async with lock:
             completed += 1
             current = completed
