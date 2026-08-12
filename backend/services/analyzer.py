@@ -21,6 +21,7 @@ import anthropic
 from anthropic import AsyncAnthropic
 from pydantic import ValidationError
 
+from config import ANALYSIS_MODEL, EFFORT, MAX_TOKENS_PER_CHUNK, THINKING_CONFIG
 from models.schemas import (
     AnalysisRun,
     AnalyzedChunk,
@@ -32,12 +33,6 @@ from models.schemas import (
 from prompts.analysis import ANALYSIS_SYSTEM_PROMPT, build_chunk_prompt
 
 logger = logging.getLogger(__name__)
-
-# See "Claude API Usage Rules" in CLAUDE.md before changing any of these.
-ANALYSIS_MODEL = "claude-sonnet-5"
-MAX_TOKENS_PER_CHUNK = 4000
-THINKING_CONFIG = {"type": "adaptive"}
-EFFORT = "low"
 
 # Bounded so a long document does not open one connection per chunk. Raise only
 # against measured rate-limit headroom.

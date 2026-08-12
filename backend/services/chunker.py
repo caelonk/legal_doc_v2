@@ -22,15 +22,17 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from config import ANALYSIS_MODEL, CHUNK_TOKENS, OVERLAP_TOKENS
 from models.schemas import DocumentChunk, ParsedDocument
 
 logger = logging.getLogger(__name__)
 
 TokenCounter = Callable[[str], int]
 
-# Per CLAUDE.md. Changing either requires a reason recorded there.
-DEFAULT_CHUNK_TOKENS = 3000
-DEFAULT_OVERLAP_TOKENS = 200
+# Re-exported under the historical names so call sites read naturally; the values
+# are owned by config.py (per CLAUDE.md).
+DEFAULT_CHUNK_TOKENS = CHUNK_TOKENS
+DEFAULT_OVERLAP_TOKENS = OVERLAP_TOKENS
 
 # Deliberately LOW. Anthropic tokenizers average roughly 3.5-4 characters per
 # token on English prose; legal text runs denser because of citations, numbers and
@@ -50,7 +52,7 @@ def estimate_tokens(text: str) -> int:
     return max(1, int(len(text) / CHARS_PER_TOKEN) + 1)
 
 
-def make_api_token_counter(client, model: str = "claude-sonnet-5") -> TokenCounter:
+def make_api_token_counter(client, model: str = ANALYSIS_MODEL) -> TokenCounter:
     """Exact token counts via the API's count_tokens endpoint.
 
     Counting is not billed, but it is a network round trip per call, so this is
