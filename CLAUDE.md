@@ -192,10 +192,17 @@ GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLET
 - Do NOT store raw PDF files in the repo — use Supabase storage bucket
 - Do NOT use synchronous requests in FastAPI routes
 - Do NOT hallucinate page numbers — only include page_reference if the parser provides it.
-  This is now ENFORCED, not just requested: `analyzer._sanitize_page_references` nulls any
-  page a chunk's parser-supplied `page_numbers` does not contain. The prompt asks; the
-  code checks. Structured outputs guarantees the field is an int or null and can say
-  nothing about whether the int is real.
+  Three mechanisms, and all three are load-bearing:
+  1. The chunker writes inline `[page N]` markers into the chunk text, so the model reads
+     page attribution instead of estimating it from position.
+  2. The prompt states the permitted page set, bounding what can be said.
+  3. `analyzer._sanitize_page_references` nulls anything outside the chunk's own
+     `page_numbers`. The prompt asks; the code checks.
+  Do NOT remove the markers on the grounds that the range is already stated. That exact
+  configuration was measured live on a 6-page lease: 11 of 13 citations landed on the
+  wrong page, every one inside the permitted range and so invisible to the range check.
+  With markers the same document scored 15 of 15. A citation that is wrong but plausible
+  is the worst output this product can produce.
 
 ## Dev Commands
 ```bash

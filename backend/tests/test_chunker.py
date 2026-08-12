@@ -71,6 +71,54 @@ def main() -> int:
         r.check("gap flagged via has_contiguous_pages",
                 all(not c.has_contiguous_pages for c in spanning))
 
+    r.section("inline page markers")
+    # The model reads these to attribute a finding to a page. Before they existed
+    # it was told the page range and left to guess position within it, which put
+    # 11 of 13 citations on the wrong page in a live run — all inside the allowed
+    # range, so no range check could catch them.
+    marked = chunk_document(make_document(pages))
+    for chunk in marked:
+        present = {n for n in range(1, 8) if f"[page {n}]" in chunk.text}
+        if not r.check(
+            f"chunk {chunk.index} markers match its page_numbers",
+            present == set(chunk.page_numbers),
+            f"markers={sorted(present)} pages={chunk.page_numbers}",
+        ):
+            break
+
+    r.check(
+        "every chunk opens with a marker",
+        all(c.text.startswith("[page ") for c in marked),
+    )
+    r.check(
+        "a marker precedes every page transition, not just the first",
+        all(
+            c.text.count("[page ") == len(c.page_numbers)
+            for c in marked
+        ),
+    )
+
+    # A chunk drawn from one page needs exactly one marker; the model should not
+    # have to read a marker per paragraph.
+    single = chunk_document(make_document([(4, "\n\n".join([PARA] * 5))]))
+    r.check("single-page chunk carries one marker", single[0].text.count("[page ") == 1)
+    r.check("marker names the real page", single[0].text.startswith("[page 4]"))
+
+    # The gap document again: page 2 has no text, so no marker may name it.
+    gap_marked = chunk_document(
+        make_document([(1, PARA), (2, "   "), (3, PARA)]), max_tokens=400, overlap_tokens=50
+    )
+    r.check(
+        "a page with no text layer is never marked",
+        all("[page 2]" not in c.text for c in gap_marked),
+    )
+
+    r.check(
+        "markers do not push a chunk over budget",
+        all(estimate_tokens(c.text) <= DEFAULT_CHUNK_TOKENS for c in marked),
+        f"max={max(estimate_tokens(c.text) for c in marked)}",
+    )
+
     r.section("budget invariants under adversarial counters")
     body = [(1, PARA * 40), (2, "Q" * 5000), (3, PARA * 40)]
     for name, fn in COUNTERS.items():

@@ -44,6 +44,21 @@ CHARS_PER_TOKEN = 3.5
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
 _SENTENCE_END = re.compile(r"(?<=[.;:!?])\s+")
 
+# Inline page boundary, written into the chunk text the model reads.
+#
+# Without this the model is told which pages a chunk spans but is shown text with
+# no boundaries in it, so the only way to pick a page is to guess from position.
+# Measured on a 6-page lease: 11 of 13 citations were wrong, every one of them
+# inside the permitted range and therefore undetectable by range checking. The
+# analyzer's out-of-range sanitiser cannot help here — a wrong-but-plausible page
+# is exactly what it cannot see, and a citation that looks verified and is not is
+# the failure docs/ui-patterns.md is built around.
+_PAGE_MARKER = "[page {n}]"
+
+
+def _marked(page_number: int, text: str) -> str:
+    return f"{_PAGE_MARKER.format(n=page_number)}\n\n{text}"
+
 
 def estimate_tokens(text: str) -> int:
     """Conservative local token estimate. No network call."""
@@ -153,6 +168,16 @@ def _remerge(pieces: list[str], limit: int, counter: TokenCounter) -> list[str]:
     return merged
 
 
+def _marker_cost(counter: TokenCounter) -> int:
+    """Token cost of one page marker, measured rather than assumed.
+
+    Measured with a wide page number so the estimate cannot be low for long
+    documents, and against the injected counter so it is right for the API
+    tokenizer too.
+    """
+    return counter(_PAGE_MARKER.format(n=9999) + "\n\n")
+
+
 def _build_segments(
     document: ParsedDocument, limit: int, counter: TokenCounter
 ) -> list[_Segment]:
@@ -160,7 +185,17 @@ def _build_segments(
 
     Pages with no text contribute nothing, which is what keeps them out of a
     chunk's `page_numbers` and therefore out of the model's citable set.
+
+    Every segment's token count includes a page marker, even though `_to_chunk`
+    only emits one where the page actually changes. That over-counts by a few
+    tokens per paragraph, which is the safe direction to be wrong: the packing
+    loop's budget arithmetic stays valid no matter which segments end up carrying
+    a marker, and no chunk can exceed max_tokens because markers were added after
+    it was measured.
     """
+    marker = _marker_cost(counter)
+    piece_limit = max(1, limit - marker)
+
     segments: list[_Segment] = []
     for page in document.pages:
         if not page.text.strip():
@@ -169,12 +204,12 @@ def _build_segments(
             para = para.strip()
             if not para:
                 continue
-            for piece in _split_oversized(para, limit, counter):
+            for piece in _split_oversized(para, piece_limit, counter):
                 segments.append(
                     _Segment(
                         page_number=page.page_number,
                         text=piece,
-                        tokens=counter(piece),
+                        tokens=counter(_marked(page.page_number, piece)),
                     )
                 )
     return segments
@@ -269,10 +304,30 @@ def chunk_document(
 
 
 def _to_chunk(index: int, segments: list[_Segment], tokens: int) -> DocumentChunk:
+    """Assemble a chunk, marking each page boundary in the text itself.
+
+    A marker is emitted whenever the page changes, including for the first
+    segment — a chunk usually starts mid-page because of the carried overlap, so
+    "the page has not changed yet" is not a safe assumption at the top.
+
+    Every page in `page_numbers` therefore appears as a marker in `text`, and no
+    other page does. That equivalence is what makes the citation checkable: the
+    model is reading the same page attribution the parser produced, not inferring
+    one from position.
+    """
     pages = sorted({s.page_number for s in segments})
+
+    parts: list[str] = []
+    current_page: int | None = None
+    for segment in segments:
+        if segment.page_number != current_page:
+            parts.append(_PAGE_MARKER.format(n=segment.page_number))
+            current_page = segment.page_number
+        parts.append(segment.text)
+
     return DocumentChunk(
         index=index,
-        text="\n\n".join(s.text for s in segments),
+        text="\n\n".join(parts),
         page_numbers=pages,
         token_estimate=tokens,
     )

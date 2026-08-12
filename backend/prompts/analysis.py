@@ -39,8 +39,15 @@ Two kinds of finding, and they are not the same strength of claim:
     be conservative here.
 
 Page references:
-  - You will be told which pages the section spans. Use only a page number from that
-    range, or null.
+  - The section text carries inline [page N] markers, inserted by the parser. Everything
+    after a marker, up to the next one, came from that page.
+  - A finding's page reference is the page named by the marker that PRECEDES the text the
+    finding is based on. Scroll back from the clause to the nearest marker above it and
+    use that number. Do not estimate from how far through the section the clause sits —
+    the pages are not equal lengths, and a section can skip a page entirely.
+  - Use only a number that appears in a marker in this section, or null.
+  - If a finding draws on text spanning a marker, use the page where the operative
+    language sits.
   - If you cannot place a finding on a specific page, return null. Never guess, never
     interpolate, never infer a page number from context.
   - A null reference renders to the reader as "Source not located", which is honest. An
@@ -92,10 +99,16 @@ def build_classification_prompt(sample: str) -> str:
 def build_chunk_prompt(chunk: DocumentChunk, *, document_type_hint: str | None = None) -> str:
     """Build the user message for a single chunk.
 
-    The page range is supplied by the PARSER, not the model, and is stated
-    explicitly so the model has a bounded set of legal page values. This is what
-    operationalizes the "never hallucinate page numbers" rule — an unbounded model
-    guessing at pages is exactly the failure the rule exists to prevent.
+    Page attribution comes from the PARSER, never the model, and reaches the model
+    two ways: as the bounded set of legal values stated here, and as [page N]
+    markers inside the chunk text itself (see chunker._to_chunk).
+
+    Both are needed. The bounded set alone was tried and is not enough — the model
+    obeys the range and then picks within it by position, because unmarked text
+    offers nothing better. Measured on a 6-page lease, that put 11 of 13 citations
+    on the wrong page, all of them inside the permitted range and so invisible to
+    any range check. The markers give the model something to read instead of
+    something to estimate; the stated range still bounds what it can say.
     """
     pages = chunk.page_numbers
 
@@ -111,17 +124,19 @@ def build_chunk_prompt(chunk: DocumentChunk, *, document_type_hint: str | None =
         )
     elif chunk.has_contiguous_pages:
         page_scope = (
-            f"This section spans pages {pages[0]} to {pages[-1]}. "
-            f"Use a page number in that range or null — nothing else."
+            f"This section spans pages {pages[0]} to {pages[-1]}, marked inline as "
+            f"[page N]. Attribute each finding to the marker directly above the text "
+            f"it comes from. Use a page number in that range or null — nothing else."
         )
     else:
         # A page inside the span contributed no text. Enumerating rather than
         # giving a range keeps the skipped page from being offered as citable.
         listed = ", ".join(str(p) for p in pages)
         page_scope = (
-            f"This section draws on pages {listed} only. Use one of exactly those "
-            f"page numbers, or null — nothing else. Pages in between are not part "
-            f"of this section."
+            f"This section draws on pages {listed} only, marked inline as [page N]. "
+            f"Attribute each finding to the marker directly above the text it comes "
+            f"from. Use one of exactly those page numbers, or null — nothing else. "
+            f"Pages in between are not part of this section."
         )
 
     hint = (
