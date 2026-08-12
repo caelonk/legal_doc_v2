@@ -4,10 +4,12 @@ import AnalysisProgress from '../components/AnalysisProgress'
 import ClauseNavigator from '../components/ClauseNavigator'
 import DocumentHeader from '../components/DocumentHeader'
 import ResultsPanel from '../components/ResultsPanel'
+import { ResultsSkeleton, SourceSkeleton } from '../components/Skeleton'
 import SourcePane from '../components/SourcePane'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/Tabs'
 import { useAnalysisJob } from '../hooks/useAnalysisJob'
 import { useMediaQuery } from '../hooks/useMediaQuery'
+import { useReviewState } from '../hooks/useReviewState'
 
 // Matches Tailwind's `lg`. Below this the two-pane split stops being useful —
 // design-system.md §3 says explicitly not to keep two panes on a phone.
@@ -71,6 +73,7 @@ export default function Analysis() {
   const pendingPage = useRef(null)
 
   const { job, error } = useAnalysisJob(jobId, location.state?.seed ?? null)
+  const { reviewed, toggle: toggleReviewed } = useReviewState(jobId)
 
   // On a narrow viewport the source lives behind a tab, so Radix has it
   // unmounted and sourceRef is null. Following a citation therefore has to switch
@@ -123,21 +126,52 @@ export default function Analysis() {
     }
 
     if (job.status !== 'COMPLETE') {
-      return (
-        <Centered>
-          <h1 className="font-serif text-2xl text-ink">{job.document.filename}</h1>
-          <p className="mt-2 font-mono text-sm text-ink-subtle">
-            {job.document.page_count} pages · {job.document.chunk_count} sections
-          </p>
-          <div className="mt-8">
-            <AnalysisProgress job={job} />
+      // Skeletons in the final layout rather than a centred card, per
+      // ui-patterns.md §4 and design-system.md §5. Two things make this worth it:
+      // the page does not jump when the result lands, and the reader can see what
+      // kind of thing is coming. The document header is REAL data — it arrives
+      // with the 202, before any analysis has run.
+      const progress = <AnalysisProgress job={job} />
+      const pending = (
+        <div className="h-full overflow-y-auto bg-surface-sunken p-4 lg:p-6">
+          <div className="space-y-6">
+            {progress}
+            <ResultsSkeleton />
           </div>
-        </Centered>
+        </div>
+      )
+
+      return (
+        <div className="flex h-[calc(100vh-3.5rem)] flex-col">
+          <DocumentHeader document={job.document} documentTypeHint={null} />
+          {isWide ? (
+            <div className="flex min-h-0 flex-1">
+              <div className="min-h-0 w-3/5 border-r border-border">
+                <SourceSkeleton pageCount={job.document.page_count} />
+              </div>
+              <div className="min-h-0 w-2/5">{pending}</div>
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1">{pending}</div>
+          )}
+        </div>
       )
     }
 
-    const findings = <ResultsPanel result={job.result} onNavigate={navigateToPage} />
-    const navigator = <ClauseNavigator result={job.result} onNavigate={navigateToPage} />
+    // Review state is owned here and shared by both views: the findings table and
+    // the navigator are readings of the same findings, so a mark made in one that
+    // did not show in the other would read as a bug.
+    const findings = (
+      <ResultsPanel
+        result={job.result}
+        onNavigate={navigateToPage}
+        reviewed={reviewed}
+        onToggleReviewed={toggleReviewed}
+      />
+    )
+    const navigator = (
+      <ClauseNavigator result={job.result} onNavigate={navigateToPage} reviewed={reviewed} />
+    )
     const source = <SourcePane ref={sourceRef} pages={job.result.pages} />
 
     return (

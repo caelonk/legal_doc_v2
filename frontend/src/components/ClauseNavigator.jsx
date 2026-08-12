@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react'
 import RiskBadge from './RiskBadge'
 import {
   collectRiskFlags,
@@ -20,7 +21,7 @@ import {
  * or a coloured dot, and that is the case the rule exists to forbid.
  */
 
-function NavigatorEntry({ flag, onNavigate }) {
+function NavigatorEntry({ flag, onNavigate, isReviewed }) {
   const located = flag.page_reference !== null && flag.page_reference !== undefined
 
   const body = (
@@ -33,7 +34,19 @@ function NavigatorEntry({ flag, onNavigate }) {
           <span className="font-mono text-xs text-ink-subtle">no page</span>
         )}
       </span>
-      <span className="mt-1.5 block text-sm text-ink">{flag.clause_type}</span>
+      <span className="mt-1.5 flex items-center gap-1.5 text-sm text-ink">
+        {/* Reviewed state is shared with the findings table rather than tracked
+            separately — the two are views of the same findings, and a mark made
+            in one that did not show in the other would read as a bug. Shown as
+            icon plus text, never the icon alone. */}
+        {isReviewed && (
+          <span className="inline-flex shrink-0 items-center gap-1 font-mono text-xs text-ink-subtle">
+            <Check size={16} strokeWidth={1.5} aria-hidden="true" className="text-accent" />
+            Reviewed
+          </span>
+        )}
+        <span className={isReviewed ? 'text-ink-muted' : undefined}>{flag.clause_type}</span>
+      </span>
     </>
   )
 
@@ -61,7 +74,7 @@ function NavigatorEntry({ flag, onNavigate }) {
   )
 }
 
-export default function ClauseNavigator({ result, onNavigate }) {
+export default function ClauseNavigator({ result, onNavigate, reviewed = new Set() }) {
   const flags = collectRiskFlags(result)
   const counts = countBySeverity(flags)
   const { located, unlocated } = partitionByLocated(flags)
@@ -86,7 +99,12 @@ export default function ClauseNavigator({ result, onNavigate }) {
         <>
           <ul className="bg-surface">
             {ordered.map((flag) => (
-              <NavigatorEntry key={flag.key} flag={flag} onNavigate={onNavigate} />
+              <NavigatorEntry
+                key={flag.key}
+                flag={flag}
+                onNavigate={onNavigate}
+                isReviewed={reviewed.has(flag.key)}
+              />
             ))}
           </ul>
 
@@ -100,7 +118,12 @@ export default function ClauseNavigator({ result, onNavigate }) {
               </h3>
               <ul className="bg-surface">
                 {unlocated.map((flag) => (
-                  <NavigatorEntry key={flag.key} flag={flag} onNavigate={onNavigate} />
+                  <NavigatorEntry
+                    key={flag.key}
+                    flag={flag}
+                    onNavigate={onNavigate}
+                    isReviewed={reviewed.has(flag.key)}
+                  />
                 ))}
               </ul>
             </>

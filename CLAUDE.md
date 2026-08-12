@@ -44,6 +44,7 @@ legal-doc-analyzer/
 │   │   │   ├── ResultsPanel.jsx
 │   │   │   ├── ClauseNavigator.jsx   # Jump list in DOCUMENT order, not severity
 │   │   │   ├── PageReference.jsx     # The provenance affordance
+│   │   │   ├── Skeleton.jsx          # Loading shapes matching the final layout
 │   │   │   ├── Tabs.jsx              # Styled Radix Tabs wrapper
 │   │   │   └── RiskBadge.jsx
 │   │   ├── pages/
@@ -51,7 +52,8 @@ legal-doc-analyzer/
 │   │   │   └── Analysis.jsx
 │   │   ├── hooks/
 │   │   │   ├── useAnalysisJob.js     # Polls a job to a terminal state
-│   │   │   └── useMediaQuery.js      # Picks the split-pane vs tabbed layout
+│   │   │   ├── useMediaQuery.js      # Picks the split-pane vs tabbed layout
+│   │   │   └── useReviewState.js     # Per-flag "reviewed", in memory by design
 │   │   ├── lib/
 │   │   │   └── severity.js           # Ordering + counts; see the rank note inside
 │   │   ├── tests/                    # Vitest + jsdom; npm test. README states what

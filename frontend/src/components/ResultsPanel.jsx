@@ -1,4 +1,5 @@
-import { FileWarning, ShieldAlert } from 'lucide-react'
+import { useState } from 'react'
+import { Check, FileWarning, ShieldAlert } from 'lucide-react'
 import PageReference from './PageReference'
 import RiskBadge from './RiskBadge'
 import {
@@ -53,7 +54,8 @@ function SkippedSections({ skipped }) {
   )
 }
 
-function RiskFlagTable({ flags, onNavigate }) {
+function RiskFlagTable({ flags, onNavigate, reviewed, onToggleReviewed }) {
+  const [hideReviewed, setHideReviewed] = useState(false)
   const counts = countBySeverity(flags)
 
   if (flags.length === 0) {
@@ -76,15 +78,34 @@ function RiskFlagTable({ flags, onNavigate }) {
     )
   }
 
+  const reviewedCount = flags.filter((flag) => reviewed.has(flag.key)).length
+  const visible = hideReviewed ? flags.filter((flag) => !reviewed.has(flag.key)) : flags
+  const hiddenCount = flags.length - visible.length
+
   return (
     <section>
-      <div className="flex items-baseline justify-between gap-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h2 className="font-serif text-xl text-ink">Risk flags</h2>
         {/* Counts, never an aggregate "document risk score" — a composite number
             invites reliance on a figure nothing in the pipeline validates. */}
         <p className="font-mono text-xs text-ink-muted">
           {counts.HIGH} high · {counts.MEDIUM} medium · {counts.LOW} low
         </p>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <p className="text-xs text-ink-subtle">
+          {reviewedCount} of {flags.length} reviewed
+        </p>
+        {reviewedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setHideReviewed((value) => !value)}
+            className="rounded-sm px-1 py-0.5 text-xs text-accent underline decoration-transparent underline-offset-2 transition hover:decoration-current"
+          >
+            {hideReviewed ? 'Show reviewed' : 'Hide reviewed'}
+          </button>
+        )}
       </div>
 
       <div className="mt-3 overflow-x-auto rounded-md border border-border bg-surface">
@@ -103,28 +124,87 @@ function RiskFlagTable({ flags, onNavigate }) {
               <th scope="col" className="px-4 py-3 font-medium text-ink-muted">
                 Source
               </th>
+              <th scope="col" className="px-4 py-3 font-medium text-ink-muted">
+                Reviewed
+              </th>
             </tr>
           </thead>
           <tbody>
-            {sortBySeverity(flags).map((flag) => (
-              <tr key={flag.key} className="border-b border-border last:border-b-0 align-top">
-                <td className="px-4 py-3">
-                  <RiskBadge severity={flag.severity} />
-                </td>
-                <td className="px-4 py-3 font-medium text-ink">{flag.clause_type}</td>
-                {/* The explanation sits in the same visual unit as the conclusion.
-                    A bare severity + clause name is a conclusion with nothing to
-                    check it against. */}
-                <td className="max-w-measure px-4 py-3 text-ink-muted">{flag.explanation}</td>
-                <td className="whitespace-nowrap px-4 py-3">
-                  <PageReference page={flag.page_reference} onNavigate={onNavigate} />
-                </td>
-              </tr>
-            ))}
+            {sortBySeverity(visible).map((flag) => {
+              const isReviewed = reviewed.has(flag.key)
+              return (
+                <tr
+                  key={flag.key}
+                  className={`border-b border-border last:border-b-0 align-top ${
+                    isReviewed ? 'bg-surface-sunken' : ''
+                  }`}
+                >
+                  <td className="px-4 py-3">
+                    <RiskBadge severity={flag.severity} />
+                  </td>
+                  <td className="px-4 py-3 font-medium text-ink">{flag.clause_type}</td>
+                  {/* The explanation sits in the same visual unit as the conclusion,
+                      reviewed or not. A bare severity + clause name is a conclusion
+                      with nothing to check it against, so marking a finding read
+                      must not collapse the one field that supports it. */}
+                  <td className="max-w-measure px-4 py-3 text-ink-muted">{flag.explanation}</td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <PageReference page={flag.page_reference} onNavigate={onNavigate} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <ReviewToggle
+                      flag={flag}
+                      isReviewed={isReviewed}
+                      onToggle={() => onToggleReviewed?.(flag.key)}
+                    />
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+
+      {hiddenCount > 0 && (
+        /* Findings are never silently absent. If the reader has filtered some
+           away, the count says so and the control to bring them back is above. */
+        <p className="mt-2 text-xs text-ink-subtle">
+          {hiddenCount} reviewed {hiddenCount === 1 ? 'finding' : 'findings'} hidden.
+        </p>
+      )}
     </section>
+  )
+}
+
+/**
+ * "The tool proposes, the reader decides" (docs/ui-patterns.md §2).
+ *
+ * A toggle button with aria-pressed rather than a checkbox: this is a two-state
+ * control acting on the row, not a form field being submitted anywhere. Marking a
+ * finding reviewed changes nothing about the finding — it is not dismissed, its
+ * explanation stays visible, and its severity badge is untouched.
+ */
+function ReviewToggle({ flag, isReviewed, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={isReviewed}
+      aria-label={`Mark ${flag.clause_type} as reviewed`}
+      className={`inline-flex min-h-6 items-center gap-1.5 rounded-sm border px-2 py-0.5 text-xs transition ${
+        isReviewed
+          ? 'border-border-strong bg-surface text-ink-muted'
+          : 'border-border text-ink-subtle hover:text-ink'
+      }`}
+    >
+      <Check
+        size={16}
+        strokeWidth={1.5}
+        aria-hidden="true"
+        className={isReviewed ? 'text-accent' : 'text-ink-subtle'}
+      />
+      {isReviewed ? 'Reviewed' : 'Mark'}
+    </button>
   )
 }
 
@@ -203,7 +283,12 @@ function Summaries({ sections, onNavigate }) {
   )
 }
 
-export default function ResultsPanel({ result, onNavigate }) {
+export default function ResultsPanel({
+  result,
+  onNavigate,
+  reviewed = new Set(),
+  onToggleReviewed,
+}) {
   const flags = collectRiskFlags(result)
   const missing = collectMissingClauses(result)
 
@@ -215,7 +300,12 @@ export default function ResultsPanel({ result, onNavigate }) {
             page's h1. */}
         <Disclosure />
         <SkippedSections skipped={result.skipped} />
-        <RiskFlagTable flags={flags} onNavigate={onNavigate} />
+        <RiskFlagTable
+          flags={flags}
+          onNavigate={onNavigate}
+          reviewed={reviewed}
+          onToggleReviewed={onToggleReviewed}
+        />
         <MissingClauseList clauses={missing} />
         <Summaries sections={result.sections} onNavigate={onNavigate} />
       </div>
