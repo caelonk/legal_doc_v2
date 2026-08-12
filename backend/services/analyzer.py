@@ -25,6 +25,7 @@ from config import (
     ANALYSIS_MODEL,
     CLASSIFICATION_MAX_TOKENS,
     CLASSIFICATION_SAMPLE_CHARS,
+    CLASSIFICATION_THINKING,
     EFFORT,
     LIGHTWEIGHT_MODEL,
     MAX_TOKENS_PER_CHUNK,
@@ -63,6 +64,24 @@ class _ParsedResponse(Protocol):
 
     stop_reason: str | None
     parsed_output: ChunkAnalysis | None
+
+
+def _is_truncated_json(exc: ValidationError) -> bool:
+    """True when the payload was not parseable as JSON at all.
+
+    Distinguished from a schema violation (wrong enum, missing field) by pydantic's
+    typed error code rather than by matching on message text, which changes between
+    pydantic releases.
+
+    Under structured outputs the model cannot emit ungrammatical JSON, so this
+    condition means the response was cut off mid-token — i.e. the token budget ran
+    out. Confirmed live: a 4000-token chunk request produced
+    "EOF while parsing a string at line 1 column 4892" with type=json_invalid.
+    """
+    try:
+        return any(err.get("type") == "json_invalid" for err in exc.errors())
+    except Exception:  # noqa: BLE001 - never let error inspection mask the failure
+        return False
 
 
 def interpret_response(
@@ -179,9 +198,28 @@ async def analyze_chunk(
             detail=f"APIStatusError {exc.status_code}: {exc}",
         )
     except ValidationError as exc:
-        # Structured outputs makes this rare, but client-side validation of any
-        # constraint the API cannot enforce still runs here.
-        logger.warning("chunk %s failed client-side validation: %s", chunk.index, exc)
+        # The SDK validates the response while constructing it, so a truncated
+        # payload raises here and `stop_reason` never reaches interpret_response.
+        # Structured outputs constrains the grammar, so syntactically invalid JSON
+        # means generation was cut off mid-token — a budget failure, not a
+        # malformed-output one. CLAUDE.md requires the two be logged separately;
+        # collapsing them would hide a systematic budget problem as random noise.
+        if _is_truncated_json(exc):
+            logger.error(
+                "chunk %s returned unparseable JSON consistent with truncation "
+                "(max_tokens=%s, thinking=%s) — review the per-chunk budget",
+                chunk.index,
+                MAX_TOKENS_PER_CHUNK,
+                THINKING_CONFIG,
+            )
+            return ChunkFailure(
+                chunk_index=chunk.index,
+                reason=ChunkFailureReason.TRUNCATED,
+                user_message="This section was too long to analyze in one pass.",
+                detail=f"json_invalid during response validation at "
+                f"max_tokens={MAX_TOKENS_PER_CHUNK}: {exc}",
+            )
+        logger.warning("chunk %s failed schema validation: %s", chunk.index, exc)
         return ChunkFailure(
             chunk_index=chunk.index,
             reason=ChunkFailureReason.INVALID_OUTPUT,
@@ -221,8 +259,9 @@ async def classify_document_type(
     hint the analysis still runs, so a classification failure must never fail the
     document. Every exit that is not a confident answer returns None.
 
-    Note the request shape differs from the analysis call — no `effort` (errors on
-    Haiku 4.5) and no `thinking` (see the note in config.py).
+    The request shape differs from the analysis call: thinking is disabled rather
+    than adaptive, and no `effort` is sent. Both are model constraints on Haiku 4.5,
+    verified against the live API — see config.py.
     """
     if not chunks:
         return None
@@ -236,6 +275,7 @@ async def classify_document_type(
             model=model,
             max_tokens=CLASSIFICATION_MAX_TOKENS,
             system=DOCUMENT_TYPE_SYSTEM_PROMPT,
+            thinking=CLASSIFICATION_THINKING,
             output_format=DocumentTypeGuess,
             messages=[{"role": "user", "content": build_classification_prompt(sample)}],
         )

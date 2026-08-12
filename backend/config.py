@@ -18,8 +18,21 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 LIGHTWEIGHT_MODEL = "claude-haiku-4-5-20251001"
 
 # Request shape ------------------------------------------------------------
-# max_tokens is ONE ceiling covering thinking tokens AND response text. The JSON
-# payload for a chunk runs ~400-900 tokens; the remainder is thinking headroom.
+# max_tokens is ONE ceiling covering thinking tokens AND response text.
+#
+# Measured against the live API on 2026-08-11 (Sonnet 5, adaptive thinking, effort
+# low), output_tokens = thinking + JSON:
+#   full 18-clause chunk (~2400 input tokens) -> 989 tokens, 25% of the ceiling
+#   the same chunk at max_tokens=12000        -> 985 tokens, so it is not
+#                                                budget-constrained here
+#   sparse chunks (one clause, signature page, exhibit stub), 12 runs
+#                                             -> 114-498 tokens, no truncation
+# 4000 therefore carries roughly 4x headroom on realistic input.
+#
+# Truncation is still possible as a rare tail event and WAS observed twice in early
+# live testing. It does not surface as stop_reason="max_tokens": the SDK validates
+# the response while constructing it, so a cut-off payload raises ValidationError
+# first. services/analyzer.py detects that case explicitly — see _is_truncated_json.
 MAX_TOKENS_PER_CHUNK = 4000
 
 # Set explicitly — never rely on the model default, which varies by model and
@@ -41,16 +54,19 @@ CLASSIFICATION_MAX_TOKENS = 200
 # opening recitals, which is where the document type is actually stated.
 CLASSIFICATION_SAMPLE_CHARS = 6000
 
-# NOTE ON `thinking` FOR THE CLASSIFICATION CALL
-# CLAUDE.md says to always set `thinking` explicitly. That rule exists because the
-# default varies by model and changed between Sonnet 4.6 and Sonnet 5. It does not
-# extend to LIGHTWEIGHT_MODEL: Haiku 4.5 predates adaptive thinking, and on pre-4.6
-# models omitting `thinking` unambiguously means "no thinking". So the classifier
-# omits it deliberately.
-#   - Do NOT send {"type": "adaptive"} here — that is a 4.6+ mode.
-#   - {"type": "disabled"} may well be accepted, but it is unverified against the
-#     live API for this model, and omission is definitively safe.
-#   - Do NOT send output_config={"effort": ...} — effort errors on Haiku 4.5.
+# Classification runs without thinking — it is a labelling task, not a judgment
+# one. Set explicitly rather than omitted, per the always-set-thinking rule in
+# CLAUDE.md, so the intent is visible in the request and a future default change
+# cannot alter behaviour silently.
+#
+# The three shapes below were checked against the live API on 2026-08-11 for
+# claude-haiku-4-5-20251001. Do not "modernise" them to match the Sonnet path:
+#   - {"type": "disabled"}          -> accepted (what we send)
+#   - {"type": "adaptive"}          -> 400 "adaptive thinking is not supported
+#                                      on this model"
+#   - output_config={"effort": ...} -> 400 "This model does not support the
+#                                      effort parameter."
+CLASSIFICATION_THINKING: dict[str, str] = {"type": "disabled"}
 
 # Chunking -----------------------------------------------------------------
 CHUNK_TOKENS = 3000

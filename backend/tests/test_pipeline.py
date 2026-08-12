@@ -20,10 +20,13 @@ from _harness import Results, make_mixed_pdf
 
 from config import CLASSIFICATION_SAMPLE_CHARS
 
+from pydantic import ValidationError
+
 from models.schemas import (
     AnalyzedChunk,
     ChunkAnalysis,
     ChunkFailure,
+    ChunkFailureReason,
     Confidence,
     DocumentChunk,
     DocumentTypeGuess,
@@ -75,7 +78,10 @@ class _FakeMessages:
             return self.classification
         index = self.chunk_calls
         self.chunk_calls += 1
-        return self.chunk_script[index]
+        scripted = self.chunk_script[index]
+        if isinstance(scripted, Exception):
+            raise scripted
+        return scripted
 
     @property
     def chunk_requests(self) -> list[dict]:
@@ -214,8 +220,13 @@ async def main() -> int:
     r.check("classifier uses the lightweight model",
             cls_req["model"] == "claude-haiku-4-5-20251001", cls_req["model"])
     r.check("chunks still use the analysis model", reqs[0]["model"] == "claude-sonnet-5")
+    # Both verified against the live API for Haiku 4.5: effort 400s, adaptive
+    # thinking 400s, disabled is accepted. See config.py.
     r.check("classifier sends no effort", "output_config" not in cls_req)
-    r.check("classifier sends no thinking", "thinking" not in cls_req)
+    r.check("classifier disables thinking explicitly",
+            cls_req.get("thinking") == {"type": "disabled"}, str(cls_req.get("thinking")))
+    r.check("classifier never sends adaptive thinking",
+            cls_req.get("thinking", {}).get("type") != "adaptive")
     r.check("classifier sends no sampling params",
             not any(k in cls_req for k in ("temperature", "top_p", "top_k")))
     r.check("classifier bound to DocumentTypeGuess",
@@ -286,6 +297,48 @@ async def main() -> int:
                 [DocumentChunk(index=0, text="AAA", page_numbers=[1]),
                  DocumentChunk(index=1, text="BBB", page_numbers=[2])]
             ) == "AAA\n\nBBB")
+
+    r.section("truncation surfacing as a parse failure")
+    # The SDK validates while constructing the response, so a truncated payload
+    # raises ValidationError and stop_reason never reaches interpret_response.
+    # Both ValidationError shapes are produced by real pydantic, not hand-built,
+    # so the branch is tested against the exception the SDK will actually raise.
+    truncated_json = '{"summary":"This clause limits liability and'
+    try:
+        ChunkAnalysis.model_validate_json(truncated_json)
+        cut_short = None
+    except ValidationError as exc:
+        cut_short = exc
+    r.check("truncated JSON raises ValidationError", cut_short is not None)
+    r.check("truncation is recognised", analyzer._is_truncated_json(cut_short) is True)
+
+    try:
+        ChunkAnalysis.model_validate_json(
+            '{"summary":"s","risk_flags":[],"missing_clauses":[],"document_type":123}'
+        )
+        schema_violation = None
+    except ValidationError as exc:
+        schema_violation = exc
+    r.check("schema violation raises ValidationError", schema_violation is not None)
+    r.check("schema violation is NOT called truncation",
+            analyzer._is_truncated_json(schema_violation) is False)
+
+    client = FakeClient([cut_short])
+    outcome = await analyzer.analyze_chunk(
+        client, DocumentChunk(index=7, text="t", page_numbers=[1])
+    )
+    r.check("truncated parse becomes a ChunkFailure", isinstance(outcome, ChunkFailure))
+    r.check("classified TRUNCATED, not INVALID_OUTPUT",
+            outcome.reason is ChunkFailureReason.TRUNCATED, outcome.reason.value)
+    r.check("truncation user message matches the budget wording",
+            "too long" in outcome.user_message, outcome.user_message)
+
+    client = FakeClient([schema_violation])
+    outcome = await analyzer.analyze_chunk(
+        client, DocumentChunk(index=8, text="t", page_numbers=[1])
+    )
+    r.check("schema violation stays INVALID_OUTPUT",
+            outcome.reason is ChunkFailureReason.INVALID_OUTPUT, outcome.reason.value)
 
     r.section("interpret_response branches")
     for label, resp, expected in [
