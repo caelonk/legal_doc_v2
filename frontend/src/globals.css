@@ -1,0 +1,102 @@
+/* Self-hosted, not a Google Fonts CDN link: this page displays confidential
+   contract text, so it should not emit a third-party request per view. Also
+   removes the font-swap layout shift. Sanctioned in docs/design-system.md §2. */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/source-serif-4';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Step 1 of the wiring order in docs/design-system.md §7. Every value here is
+   from that document; tailwind.config.js maps them to intent names, and
+   components touch only those names. */
+:root {
+  /* Neutrals — the bulk of the interface */
+  --color-ink: #111827; /* never pure black on pure white: halation over long reads */
+  --color-ink-muted: #4b5563;
+  --color-ink-subtle: #6b7280;
+  --color-border: #e5e7eb;
+  --color-border-strong: #d1d5db;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f7f8fa;
+  --color-surface-paper: #fafaf7; /* document reading surface only */
+
+  /* Brand */
+  --color-brand: #0b2a4a;
+  --color-brand-hover: #123a63;
+  --color-brand-subtle: #ebf1f7;
+  --color-accent: #0e7c86;
+
+  /* Risk — maps directly onto the HIGH | MEDIUM | LOW severity enum */
+  --color-risk-high: #b42318;
+  --color-risk-high-bg: #fef3f2;
+  --color-risk-high-border: #fda29b;
+  --color-risk-medium: #b54708;
+  --color-risk-medium-bg: #fffaeb;
+  --color-risk-medium-border: #fec84b;
+  --color-risk-low: #067647;
+  --color-risk-low-bg: #ecfdf3;
+  --color-risk-low-border: #a6f4c5;
+  --color-risk-info: #175cd3;
+  --color-risk-info-bg: #eff8ff;
+  --color-risk-info-border: #b2ddff;
+
+  --font-serif: 'Source Serif 4 Variable', Georgia, serif;
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface-sunken text-ink font-sans text-base antialiased;
+  }
+
+  /* Visible focus on everything interactive. design-system.md §6 requires an
+     indicator on every control; :focus-visible keeps it off mouse clicks while
+     leaving it intact for keyboard users. Never remove an outline here without
+     replacing it. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Zero animation on anything communicating risk, and none at all for users
+     who asked for none (design-system.md §5). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Temporary highlight applied when a page citation is followed, so the reader
+     can see where they landed. Fades rather than persisting — it marks a
+     destination, it does not annotate the document. */
+  .source-page-hit {
+    animation: source-hit 2000ms ease-out 1;
+  }
+}
+
+@keyframes source-hit {
+  0%,
+  60% {
+    background-color: var(--color-brand-subtle);
+  }
+  100% {
+    background-color: transparent;
+  }
+}

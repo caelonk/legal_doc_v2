@@ -34,15 +34,23 @@ legal-doc-analyzer/
 │   │   └── analysis.py          # All prompt templates (centralized)
 │   └── tests/                   # Dependency-free suite; python backend/tests/run_all.py
 ├── frontend/
+│   ├── tailwind.config.js       # Semantic tokens; src/globals.css holds the raw values
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── UploadZone.jsx
+│   │   │   ├── AnalysisProgress.jsx  # Renders stage_message verbatim from the API
+│   │   │   ├── SourcePane.jsx        # Extracted text + the citation jump target
 │   │   │   ├── ResultsPanel.jsx
-│   │   │   ├── ClauseNavigator.jsx
+│   │   │   ├── PageReference.jsx     # The provenance affordance
+│   │   │   ├── ClauseNavigator.jsx   # NOT BUILT — pass 2
 │   │   │   └── RiskBadge.jsx
 │   │   ├── pages/
 │   │   │   ├── Home.jsx
 │   │   │   └── Analysis.jsx
+│   │   ├── hooks/
+│   │   │   └── useAnalysisJob.js     # Polls a job to a terminal state
+│   │   ├── lib/
+│   │   │   └── severity.js           # Ordering + counts; see the rank note inside
 │   │   └── api/
 │   │       └── client.js        # Axios instance + API calls
 ├── docs/
@@ -220,9 +228,16 @@ npm run dev
 # Install backend deps
 pip install fastapi uvicorn pdfplumber pymupdf anthropic supabase python-dotenv pydantic
 
-# Install frontend deps
-npm install axios react-router-dom lucide-react
-# Radix primitives are pulled in per-component by the shadcn/ui CLI — do not add @headlessui/react
+# Install frontend deps (package.json is committed — this just restores it)
+cd frontend
+npm install
+# Runtime: axios, react-router-dom, lucide-react, @fontsource-variable/* (self-hosted
+# fonts — no third-party request from a page showing confidential contract text).
+# Build: vite, @vitejs/plugin-react, tailwindcss v3, postcss, autoprefixer.
+# Tailwind stays on v3: docs and .claude/rules/frontend-ui.md both key off
+# frontend/tailwind.config.js, and v4's CSS-first setup has no such file.
+# Radix primitives are pulled in per-component by the shadcn/ui CLI when a component
+# actually needs them (tabs, dialog, tooltip) — do not add @headlessui/react
 ```
 
 ## Environment Variables Required
