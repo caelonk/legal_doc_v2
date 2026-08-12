@@ -317,9 +317,11 @@ class AnalyzedChunk(BaseModel):
 class AnalysisRun(BaseModel):
     """The raw outcome of one analysis pass over a document's chunks.
 
-    This is NOT the merged document-level view. Deduplicating flags across the
-    200-token chunk overlap and reconciling `document_type` across chunks are
-    separate concerns, not yet modelled.
+    Per-section and unmerged, by design. Deduplicating flags across the 200-token
+    chunk overlap and reconciling `document_type` happen in
+    services/aggregator.py, which consumes this — so the evidence and the merge
+    stay separable, and a merge that gets something wrong can be checked against
+    what the sections actually said.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -435,15 +437,90 @@ class DocumentMeta(BaseModel):
     chunk_count: int
 
 
+class AggregatedRiskFlag(BaseModel):
+    """One risk, after identical reports from overlapping sections are merged.
+
+    `reported_by` keeps the provenance a merge would otherwise destroy: which
+    sections raised this, so a reader can still trace a claim back to the text it
+    came from.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    clause_type: str
+    severity: RiskLevel = Field(
+        description="The HIGHEST severity any reporting section assigned. Sections "
+        "that disagree are never averaged down — a risk one section called HIGH "
+        "does not become MEDIUM because another was more relaxed."
+    )
+    explanation: str
+    page_reference: int | None
+    reported_by: list[int] = Field(description="Chunk indices that reported this, ascending.")
+    severity_disagreement: bool = Field(
+        default=False,
+        description="True when reporting sections assigned different severities. "
+        "Surfaced rather than hidden: it means the model was not consistent about "
+        "the same clause.",
+    )
+
+
+class AggregatedMissingClause(BaseModel):
+    """A standard provision reported absent, merged across sections.
+
+    Still a per-section inference, not a document-level proof. A section that
+    CONTAINS a provision simply does not mention it, so "3 of 4 sections reported
+    this missing" is entirely consistent with it being present in the fourth.
+    `reported_by` is therefore provenance, NOT a confidence score, and must not be
+    presented as one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    clause_name: str
+    importance: RiskLevel
+    explanation: str
+    reported_by: list[int]
+
+
+class DocumentAggregate(BaseModel):
+    """The merged, document-level view of an analysis.
+
+    Added ALONGSIDE the per-section results rather than replacing them. A merge is
+    an inference, and when an inference is wrong the raw view is the only recourse
+    — so the evidence stays on the wire.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: str | None = Field(
+        description="Reconciled across sections by majority. Null when nothing was analyzed."
+    )
+    document_type_agreement: int = Field(
+        description="How many analyzed sections reported the winning type."
+    )
+    sections_analyzed: int
+    risk_flags: list[AggregatedRiskFlag]
+    missing_clauses: list[AggregatedMissingClause]
+    merged_duplicate_count: int = Field(
+        description="Risk flags removed by merging. Disclosed so a suspiciously "
+        "small finding count is explainable rather than mysterious."
+    )
+    contradicted_missing_clauses: list[str] = Field(
+        description="Provisions a section reported missing while another section "
+        "raised a risk flag about that same clause type — so the provision "
+        "demonstrably exists somewhere in the document. Withheld from "
+        "`missing_clauses` and named here, because dropping a claim silently is "
+        "the thing this codebase does not do."
+    )
+
+
 class AnalysisResult(BaseModel):
     """The completed analysis payload.
 
-    NOT a document-level merge. Sections are returned as analyzed, per chunk: the
-    200-token overlap means a clause on a boundary can appear in two sections, and
-    `document_type` can differ between them. Reconciling that is the aggregation
-    step recorded as unbuilt in AnalysisRun's docstring. Returning the raw
-    per-chunk view matches the current phase in CLAUDE.md and, more importantly,
-    does not fake a merge that has not been designed.
+    Carries BOTH views. `aggregate` is the merged document-level result — the one
+    to render — and `sections` is the per-chunk evidence behind it, kept because a
+    merge is an inference and the raw view is the only recourse when an inference
+    is wrong.
 
     `pages` carries the extracted source text so the frontend can implement the
     provenance affordance — clicking "p. 12" scrolls a source pane and highlights
@@ -458,6 +535,10 @@ class AnalysisResult(BaseModel):
         description="What the classification pre-pass concluded, or null if it was "
         "skipped or not confident. Exposed because it conditioned every section's "
         "missing-clause judgments, so a wrong hint should be visible, not buried."
+    )
+    aggregate: DocumentAggregate = Field(
+        description="The merged document-level view. Derived from `sections`, which "
+        "remain the evidence behind it."
     )
     pages: list[PageText]
     sections: list[SectionAnalysis]

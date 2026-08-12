@@ -21,6 +21,8 @@ from _harness import Results, make_image_only_pdf, make_text_pdf
 
 import main
 from models.schemas import (
+    AnalysisResult,
+    AnalysisRun,
     ChunkAnalysis,
     DocumentMeta,
     ExtractionMethod,
@@ -29,6 +31,7 @@ from models.schemas import (
     RiskLevel,
 )
 from routers import documents
+from services.aggregator import aggregate_run
 from services.jobs import JobStore, _stage_message
 from test_pipeline import FakeClient, stub_response
 
@@ -60,6 +63,12 @@ GOOD = ChunkAnalysis(
 )
 
 LEAK_MARKER = "internal-diagnostic-marker-do-not-leak"
+
+
+def empty_aggregate():
+    """The aggregate of a run with nothing in it — built, not hand-written, so it
+    cannot drift from what the real pipeline produces."""
+    return aggregate_run(AnalysisRun(analyzed=[], failures=[]))
 
 
 def api_error() -> anthropic.APIStatusError:
@@ -391,9 +400,10 @@ def main_tests() -> int:
     store2 = JobStore(retention_seconds=60.0)
     done = store2.create(meta, 1)
     done.succeed(
-        __import__("models.schemas", fromlist=["AnalysisResult"]).AnalysisResult(
+        AnalysisResult(
             document=meta,
             document_type_hint=None,
+            aggregate=empty_aggregate(),
             pages=[],
             sections=[],
             skipped=[],

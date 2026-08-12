@@ -12,36 +12,34 @@ export const SEVERITY_RANK = { HIGH: 3, MEDIUM: 2, LOW: 1 }
 export const SEVERITY_ORDER = ['HIGH', 'MEDIUM', 'LOW']
 
 /**
- * Flatten every section's risk flags into one list, tagged with where each came
- * from so a citation can still be traced back to its section.
+ * The document-level findings.
  *
- * NOTE: no de-duplication. Chunks overlap by 200 tokens, so a clause sitting on a
- * boundary can legitimately be reported by two sections. Merging them is a
- * document-level aggregation step that does not exist yet (recorded in the
- * AnalysisRun docstring); guessing at it here — by clause_type, say — would
- * quietly drop distinct findings that happen to share a name.
+ * Read from `result.aggregate`, which the backend produces in
+ * services/aggregator.py — NOT re-derived from `result.sections`. Chunks overlap
+ * by 200 tokens, so a clause on a boundary is reported by two sections, and the
+ * merge rules that decide when two reports are one finding are subtle enough to
+ * deserve one implementation with its own tests rather than a second guess here.
+ * `sections` remains on the wire as the evidence behind the merge.
+ *
+ * `chunkIndex` is the earliest reporting section, which keeps document-position
+ * sorting working on merged findings.
  */
 export function collectRiskFlags(result) {
-  if (!result) return []
-  return result.sections.flatMap((section) =>
-    section.analysis.risk_flags.map((flag, i) => ({
-      ...flag,
-      key: `${section.chunk_index}-${i}`,
-      chunkIndex: section.chunk_index,
-      sectionPages: section.pages,
-    })),
-  )
+  if (!result?.aggregate) return []
+  return result.aggregate.risk_flags.map((flag, i) => ({
+    ...flag,
+    key: `flag-${i}`,
+    chunkIndex: flag.reported_by[0] ?? 0,
+  }))
 }
 
 export function collectMissingClauses(result) {
-  if (!result) return []
-  return result.sections.flatMap((section) =>
-    section.analysis.missing_clauses.map((clause, i) => ({
-      ...clause,
-      key: `${section.chunk_index}-${i}`,
-      chunkIndex: section.chunk_index,
-    })),
-  )
+  if (!result?.aggregate) return []
+  return result.aggregate.missing_clauses.map((clause, i) => ({
+    ...clause,
+    key: `missing-${i}`,
+    chunkIndex: clause.reported_by[0] ?? 0,
+  }))
 }
 
 /** Severity descending, then document position. "What is the worst thing in here." */

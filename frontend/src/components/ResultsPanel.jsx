@@ -54,7 +54,7 @@ function SkippedSections({ skipped }) {
   )
 }
 
-function RiskFlagTable({ flags, onNavigate, reviewed, onToggleReviewed }) {
+function RiskFlagTable({ flags, onNavigate, reviewed, onToggleReviewed, mergedCount = 0 }) {
   const [hideReviewed, setHideReviewed] = useState(false)
   const counts = countBySeverity(flags)
 
@@ -147,7 +147,17 @@ function RiskFlagTable({ flags, onNavigate, reviewed, onToggleReviewed }) {
                       reviewed or not. A bare severity + clause name is a conclusion
                       with nothing to check it against, so marking a finding read
                       must not collapse the one field that supports it. */}
-                  <td className="max-w-measure px-4 py-3 text-ink-muted">{flag.explanation}</td>
+                  <td className="max-w-measure px-4 py-3 text-ink-muted">
+                    {flag.explanation}
+                    {flag.severity_disagreement && (
+                      /* Surfaced, not smoothed over. The merged severity is the
+                         highest any section gave, so the reader should know the
+                         model was not consistent about this clause. */
+                      <span className="mt-1 block text-xs text-ink-subtle">
+                        Sections disagreed on severity; the higher one is shown.
+                      </span>
+                    )}
+                  </td>
                   <td className="whitespace-nowrap px-4 py-3">
                     <PageReference page={flag.page_reference} onNavigate={onNavigate} />
                   </td>
@@ -170,6 +180,16 @@ function RiskFlagTable({ flags, onNavigate, reviewed, onToggleReviewed }) {
            away, the count says so and the control to bring them back is above. */
         <p className="mt-2 text-xs text-ink-subtle">
           {hiddenCount} reviewed {hiddenCount === 1 ? 'finding' : 'findings'} hidden.
+        </p>
+      )}
+
+      {mergedCount > 0 && (
+        /* Explains why the finding count is smaller than the sum of the section
+           counts. Without this a reader comparing the two would be left guessing
+           whether something was lost. */
+        <p className="mt-2 text-xs text-ink-subtle">
+          {mergedCount} duplicate {mergedCount === 1 ? 'report' : 'reports'} merged, where
+          overlapping sections raised the same clause.
         </p>
       )}
     </section>
@@ -214,7 +234,7 @@ function ReviewToggle({ flag, isReviewed, onToggle }) {
  * inference about absence, which is a fundamentally weaker claim. Presenting them
  * in one list would imply they carry the same weight.
  */
-function MissingClauseList({ clauses }) {
+function MissingClauseList({ clauses, contradicted = [] }) {
   return (
     <section>
       <h2 className="font-serif text-xl text-ink">Possibly missing provisions</h2>
@@ -223,6 +243,21 @@ function MissingClauseList({ clauses }) {
         flagged clause. Each section is judged on its own, so a provision listed here may appear
         elsewhere in the document.
       </p>
+
+      {contradicted.length > 0 && (
+        /* Withheld, and said so. A section claimed these were absent while another
+           section raised a risk flag about that same clause type — so the text
+           exists somewhere in the document and the absence claim was wrong. A risk
+           flag is grounded in text that exists; absence is only an inference, so
+           the stronger claim wins. Naming them beats quietly showing a shorter
+           list. */
+        <p className="mt-3 rounded-md border border-border bg-surface px-4 py-3 text-xs text-ink-muted">
+          {contradicted.length} {contradicted.length === 1 ? 'provision was' : 'provisions were'}{' '}
+          reported missing by one section but flagged as present elsewhere in the document, so
+          {contradicted.length === 1 ? ' it is' : ' they are'} not listed here:{' '}
+          <span className="text-ink">{contradicted.join(', ')}</span>.
+        </p>
+      )}
 
       {clauses.length === 0 ? (
         <div className="mt-3 rounded-md border border-border bg-surface p-6">
@@ -305,8 +340,12 @@ export default function ResultsPanel({
           onNavigate={onNavigate}
           reviewed={reviewed}
           onToggleReviewed={onToggleReviewed}
+          mergedCount={result.aggregate?.merged_duplicate_count ?? 0}
         />
-        <MissingClauseList clauses={missing} />
+        <MissingClauseList
+          clauses={missing}
+          contradicted={result.aggregate?.contradicted_missing_clauses ?? []}
+        />
         <Summaries sections={result.sections} onNavigate={onNavigate} />
       </div>
     </div>

@@ -56,8 +56,39 @@ export function documentMeta(overrides = {}) {
   }
 }
 
-export function analysisResult(overrides = {}) {
+/**
+ * A pass-through aggregate: every section's findings, none merged.
+ *
+ * Derived from the sections a test actually supplies, so a fixture cannot drift
+ * from the findings it claims to summarise. Tests about MERGING pass an explicit
+ * `aggregate` — the real merge rules are pinned in backend/tests/test_aggregator.py,
+ * where they belong, rather than reimplemented here.
+ */
+export function passthroughAggregate(sections, hint = null) {
   return {
+    document_type: sections[0]?.analysis.document_type ?? hint,
+    document_type_agreement: sections.length,
+    sections_analyzed: sections.length,
+    risk_flags: sections.flatMap((s) =>
+      s.analysis.risk_flags.map((flag) => ({
+        ...flag,
+        reported_by: [s.chunk_index],
+        severity_disagreement: false,
+      })),
+    ),
+    missing_clauses: sections.flatMap((s) =>
+      s.analysis.missing_clauses.map((clause) => ({
+        ...clause,
+        reported_by: [s.chunk_index],
+      })),
+    ),
+    merged_duplicate_count: 0,
+    contradicted_missing_clauses: [],
+  }
+}
+
+export function analysisResult(overrides = {}) {
+  const base = {
     document: documentMeta(),
     document_type_hint: 'Commercial Lease',
     pages: [
@@ -68,6 +99,11 @@ export function analysisResult(overrides = {}) {
     sections: [section()],
     skipped: [],
     ...overrides,
+  }
+  return {
+    ...base,
+    aggregate:
+      overrides.aggregate ?? passthroughAggregate(base.sections, base.document_type_hint),
   }
 }
 

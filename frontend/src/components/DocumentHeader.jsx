@@ -9,8 +9,12 @@
  *
  * It is also the better reading: which document you are looking at should not
  * depend on which view is open.
+ *
+ * `documentType` is the RECONCILED type from services/aggregator.py, not the
+ * classification pre-pass's hint. The hint conditioned the analysis; the sections
+ * then read the actual clauses, so their majority is the better answer.
  */
-export default function DocumentHeader({ document, documentTypeHint }) {
+export default function DocumentHeader({ document, documentType, typeAgreement }) {
   const partial = document.pages_with_text < document.page_count
 
   return (
@@ -25,10 +29,18 @@ export default function DocumentHeader({ document, documentTypeHint }) {
         )}
         <span aria-hidden="true">·</span>
         <span>{document.chunk_count} sections</span>
-        {documentTypeHint && (
+        {documentType && (
           <>
             <span aria-hidden="true">·</span>
-            <span className="font-sans text-ink">{documentTypeHint}</span>
+            <span className="font-sans text-ink">{documentType}</span>
+            {typeAgreement && typeAgreement.agreeing < typeAgreement.total && (
+              /* Sections did not all reach the same conclusion. The majority is
+                 shown, and the split is disclosed rather than presented as a
+                 settled fact. */
+              <span className="text-ink-subtle">
+                {typeAgreement.agreeing} of {typeAgreement.total} sections
+              </span>
+            )}
           </>
         )}
         <span aria-hidden="true">·</span>

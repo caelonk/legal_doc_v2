@@ -18,6 +18,7 @@ MODULES = [
     "test_parser.py",
     "test_chunker.py",
     "test_pipeline.py",
+    "test_aggregator.py",
     "test_api.py",
 ]
 

@@ -42,6 +42,7 @@ from models.schemas import (
     SectionAnalysis,
     SkippedSection,
 )
+from services.aggregator import aggregate_run
 from services.analyzer import analyze_document
 from services.chunker import chunk_document_async
 from services.jobs import AnalysisJob
@@ -121,6 +122,9 @@ def _build_result(
     return AnalysisResult(
         document=document,
         document_type_hint=run.document_type_hint,
+        # Merged view alongside the evidence, never instead of it — see
+        # services/aggregator.py.
+        aggregate=aggregate_run(run),
         pages=parsed.pages,
         sections=[
             SectionAnalysis(

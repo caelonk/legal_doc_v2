@@ -26,6 +26,7 @@ legal-doc-analyzer/
 │   │   ├── parser.py            # PDF text extraction logic
 │   │   ├── chunker.py           # Token-aware text chunking
 │   │   ├── analyzer.py          # Claude API calls + prompt logic
+│   │   ├── aggregator.py        # Per-section results -> one document-level view
 │   │   ├── jobs.py              # In-memory analysis job store (see API Surface)
 │   │   └── supabase.py          # Storage client
 │   ├── models/
@@ -120,7 +121,15 @@ legal-doc-analyzer/
 - Do NOT reach for `temperature=0` to make analyzer output deterministic or better-formed.
   It never guaranteed identical outputs on any model, and it is not the lever for schema
   conformance — the enforced JSON schema and system prompt above are.
-- Chunk documents at 3000 tokens with 200-token overlap to preserve clause context
+- Chunk documents at 3000 tokens with 200-token overlap to preserve clause context.
+  **KNOWN GAP, measured 2026-08-12:** the overlap frequently does not materialise.
+  `chunker._overlap_tail` carries WHOLE paragraph segments and stops at the first that
+  does not fit, so a paragraph larger than 200 tokens can never be carried. Real legal
+  paragraphs routinely exceed it — the sample lease measured a 673-token median, all 5
+  segments over budget, and consecutive chunks shared zero text. A clause split across a
+  boundary is therefore NOT currently seen whole by either chunk, which is the one thing
+  the overlap exists to guarantee. Fixing it means carrying a partial segment (a
+  sentence-level tail), which changes chunk boundaries — do not treat it as cosmetic.
 - NEVER send the full document text in a single API call
 
 ## Expected JSON Output Schema
@@ -186,6 +195,11 @@ GET  /api/documents/analyze/{job_id}      progress, then the result once COMPLET
 - Job state is in this process's memory (`services/jobs.py`). **Run a single worker.**
   `--workers 2` would answer polls for jobs the other worker owns. Lifting this means
   moving job state to Supabase, alongside document history.
+- `AnalysisResult` carries BOTH `aggregate` (the merged document-level view from
+  `services/aggregator.py`) and `sections` (the per-chunk evidence). The merge is an
+  inference; the raw view is the recourse when an inference is wrong, so both ship.
+  Aggregation is conservative on purpose: over-merging deletes a finding, under-merging
+  only shows a duplicate. Those are not symmetric harms.
 - `ChunkFailure.detail` NEVER crosses the wire. `SkippedSection` is the public form and
   omits it; `routers/documents.py::_build_result` is the only conversion point. Keep it
   the only one.

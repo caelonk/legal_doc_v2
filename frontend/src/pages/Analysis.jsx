@@ -143,7 +143,7 @@ export default function Analysis() {
 
       return (
         <div className="flex h-[calc(100vh-3.5rem)] flex-col">
-          <DocumentHeader document={job.document} documentTypeHint={null} />
+          <DocumentHeader document={job.document} documentType={null} />
           {isWide ? (
             <div className="flex min-h-0 flex-1">
               <div className="min-h-0 w-3/5 border-r border-border">
@@ -180,7 +180,11 @@ export default function Analysis() {
             whichever view is open. */}
         <DocumentHeader
           document={job.document}
-          documentTypeHint={job.result.document_type_hint}
+          documentType={job.result.aggregate.document_type}
+          typeAgreement={{
+            agreeing: job.result.aggregate.document_type_agreement,
+            total: job.result.aggregate.sections_analyzed,
+          }}
         />
 
         {isWide ? (
