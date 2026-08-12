@@ -69,10 +69,10 @@ function SkippedSections({ skipped }) {
   if (skipped.length === 0) return null
   return (
     <section className="rounded-md border border-risk-medium-border bg-risk-medium-bg p-4">
-      <h3 className="flex items-center gap-2 text-sm font-semibold text-risk-medium">
+      <h2 className="flex items-center gap-2 text-sm font-semibold text-risk-medium">
         <FileWarning size={16} strokeWidth={1.5} aria-hidden="true" />
         {skipped.length} {skipped.length === 1 ? 'section' : 'sections'} could not be analyzed
-      </h3>
+      </h2>
       <ul className="mt-2 space-y-1 text-sm text-risk-medium">
         {skipped.map((section) => (
           <li key={section.chunk_index}>
@@ -98,7 +98,7 @@ function RiskFlagTable({ flags, onNavigate }) {
     // (docs/ui-patterns.md §4).
     return (
       <section>
-        <h3 className="font-serif text-xl text-ink">Risk flags</h3>
+        <h2 className="font-serif text-xl text-ink">Risk flags</h2>
         <div className="mt-3 rounded-md border border-border bg-surface p-6">
           <p className="text-sm font-medium text-ink">
             No risk-flagged clauses were identified in this document.
@@ -115,7 +115,7 @@ function RiskFlagTable({ flags, onNavigate }) {
   return (
     <section>
       <div className="flex items-baseline justify-between gap-4">
-        <h3 className="font-serif text-xl text-ink">Risk flags</h3>
+        <h2 className="font-serif text-xl text-ink">Risk flags</h2>
         {/* Counts, never an aggregate "document risk score" — a composite number
             invites reliance on a figure nothing in the pipeline validates. */}
         <p className="font-mono text-xs text-ink-muted">
@@ -173,7 +173,7 @@ function RiskFlagTable({ flags, onNavigate }) {
 function MissingClauseList({ clauses }) {
   return (
     <section>
-      <h3 className="font-serif text-xl text-ink">Possibly missing provisions</h3>
+      <h2 className="font-serif text-xl text-ink">Possibly missing provisions</h2>
       <p className="mt-1 max-w-measure text-sm text-ink-muted">
         These are inferences about what is <em>absent</em>, which is a weaker claim than a
         flagged clause. Each section is judged on its own, so a provision listed here may appear
@@ -221,7 +221,7 @@ function MissingClauseList({ clauses }) {
 function Summaries({ sections, onNavigate }) {
   return (
     <section>
-      <h3 className="font-serif text-xl text-ink">Section summaries</h3>
+      <h2 className="font-serif text-xl text-ink">Section summaries</h2>
       <div className="mt-3 space-y-4">
         {sections.map((section) => (
           <article key={section.chunk_index} className="rounded-md border border-border bg-surface p-4">

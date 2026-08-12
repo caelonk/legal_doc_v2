@@ -10,4 +10,12 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  // Vitest config lives here rather than in its own file so there is only one
+  // place where the React plugin and the test environment can disagree.
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/tests/setup.js',
+    include: ['src/tests/**/*.test.{js,jsx}'],
+  },
 })

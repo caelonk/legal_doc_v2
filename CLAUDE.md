@@ -51,6 +51,8 @@ legal-doc-analyzer/
 │   │   │   └── useAnalysisJob.js     # Polls a job to a terminal state
 │   │   ├── lib/
 │   │   │   └── severity.js           # Ordering + counts; see the rank note inside
+│   │   ├── tests/                    # Vitest + jsdom; npm test. README states what
+│   │   │                             # jsdom CANNOT check (target size, zoom, contrast)
 │   │   └── api/
 │   │       └── client.js        # Axios instance + API calls
 ├── docs/
@@ -225,6 +227,12 @@ python backend/tests/run_all.py
 cd frontend
 npm run dev
 
+# Frontend tests (Vitest + jsdom)
+cd frontend
+npm test
+# jsdom has no layout engine, so target size, 200% reflow and contrast are NOT
+# covered here — see frontend/src/tests/README.md for the browser checklist.
+
 # Install backend deps
 pip install fastapi uvicorn pdfplumber pymupdf anthropic supabase python-dotenv pydantic
 
@@ -234,6 +242,7 @@ npm install
 # Runtime: axios, react-router-dom, lucide-react, @fontsource-variable/* (self-hosted
 # fonts — no third-party request from a page showing confidential contract text).
 # Build: vite, @vitejs/plugin-react, tailwindcss v3, postcss, autoprefixer.
+# Test: vitest, jsdom, @testing-library/react, @testing-library/jest-dom.
 # Tailwind stays on v3: docs and .claude/rules/frontend-ui.md both key off
 # frontend/tailwind.config.js, and v4's CSS-first setup has no such file.
 # Radix primitives are pulled in per-component by the shadcn/ui CLI when a component
