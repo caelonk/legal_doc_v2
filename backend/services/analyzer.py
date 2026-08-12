@@ -19,7 +19,7 @@ from typing import Callable, Protocol
 
 import anthropic
 from anthropic import AsyncAnthropic
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from config import (
     ANALYSIS_MODEL,
@@ -84,6 +84,127 @@ def _is_truncated_json(exc: ValidationError) -> bool:
         return any(err.get("type") == "json_invalid" for err in exc.errors())
     except Exception:  # noqa: BLE001 - never let error inspection mask the failure
         return False
+
+
+def _tidy(text: str) -> str:
+    """Make one model-authored string fit to display.
+
+    Two defects seen in live output, both of which produce perfectly valid JSON and
+    so cannot be prevented by the schema:
+      - trailing whitespace, which renders as a stray blank line
+      - a trailing `}]`, the model leaking its sense of closing the JSON into the
+        string's own contents
+
+    Whitespace is stripped outright. Structural closers are removed only when the
+    string contains no matching opener, which is what makes this safe to run over
+    every field: "See Exhibit A [as amended]" is balanced and survives untouched,
+    while "...on Landlord's part.}]" is not and is trimmed. Plain `.strip()` does
+    NOT handle the second case — `}` and `]` are not whitespace.
+
+    Quotes are deliberately not handled. They were never observed, and a quote
+    cannot be balance-checked reliably enough to risk editing a legal explanation.
+    """
+    tidied = text.strip()
+    while tidied and tidied[-1] in "}]":
+        closer = tidied[-1]
+        opener = "{" if closer == "}" else "["
+        if tidied.count(closer) <= tidied.count(opener):
+            break  # balanced, so it is content rather than an artifact
+        tidied = tidied[:-1].rstrip()
+    return tidied
+
+
+def _tidy_updates(
+    model: BaseModel, fields: tuple[str, ...], report: list[str], prefix: str = ""
+) -> dict[str, str]:
+    """Collect the fields of `model` that need tidying, and note the notable ones.
+
+    `report` accumulates only the cases worth a log line — a structural trim, or a
+    field that cleanup would have emptied. Whitespace stripping is too routine to
+    be worth reporting and would drown the signal.
+
+    `prefix` qualifies the reported name ("risk_flags[0]."). Both a risk flag and a
+    missing clause have a field called `explanation`, so an unqualified report
+    reads "explanation, explanation" and says nothing about where to look.
+    """
+    updates: dict[str, str] = {}
+    for name in fields:
+        original: str = getattr(model, name)
+        cleaned = _tidy(original)
+        if cleaned == original:
+            continue
+        if not cleaned:
+            # Cleanup must never be able to manufacture a missing explanation:
+            # .claude/rules/ai-output.md forbids rendering a conclusion without
+            # one, and an odd-looking explanation is better than no explanation.
+            report.append(f"{prefix}{name} (empty after tidying — original kept)")
+            continue
+        if original.strip() != cleaned:
+            # More than whitespace came off, i.e. a structural closer.
+            report.append(f"{prefix}{name}")
+        updates[name] = cleaned
+    return updates
+
+
+def _sanitize_text(analysis: ChunkAnalysis, chunk_index: int) -> ChunkAnalysis:
+    """Normalize every string the model authored in this analysis.
+
+    Internal newlines are left alone on purpose. HTML collapses them to spaces
+    already, so rewriting them would be content mutation with no rendering
+    benefit — only the ends are stripped.
+    """
+    report: list[str] = []
+
+    flags = []
+    flags_changed = False
+    for i, flag in enumerate(analysis.risk_flags):
+        updates = _tidy_updates(
+            flag, ("clause_type", "explanation"), report, f"risk_flags[{i}]."
+        )
+        flags_changed = flags_changed or bool(updates)
+        flags.append(flag.model_copy(update=updates) if updates else flag)
+
+    missing = []
+    missing_changed = False
+    for i, clause in enumerate(analysis.missing_clauses):
+        updates = _tidy_updates(
+            clause, ("clause_name", "explanation"), report, f"missing_clauses[{i}]."
+        )
+        missing_changed = missing_changed or bool(updates)
+        missing.append(clause.model_copy(update=updates) if updates else clause)
+
+    top_level = _tidy_updates(analysis, ("summary", "document_type"), report)
+
+    if report:
+        # Warning, not debug: a model that routinely emits JSON punctuation inside
+        # its own strings is a prompt-level signal, even though the output is now
+        # safe. The field names go to the log; the raw text does not.
+        logger.warning(
+            "chunk %s returned text needing structural cleanup in: %s",
+            chunk_index,
+            ", ".join(report),
+        )
+
+    if not (flags_changed or missing_changed or top_level):
+        return analysis
+
+    return analysis.model_copy(
+        update={**top_level, "risk_flags": flags, "missing_clauses": missing}
+    )
+
+
+def _sanitize_analysis(
+    analysis: ChunkAnalysis, chunk_index: int, allowed_pages: list[int] | None
+) -> ChunkAnalysis:
+    """Everything the schema could not guarantee, in one pass.
+
+    Structured outputs fixes the SHAPE of the response. These two checks cover the
+    rest: that a page number is one the parser actually supplied, and that a string
+    is fit to put in front of a reader. They are independent and compose in either
+    order.
+    """
+    analysis = _sanitize_page_references(analysis, chunk_index, allowed_pages)
+    return _sanitize_text(analysis, chunk_index)
 
 
 def _sanitize_page_references(
@@ -202,7 +323,7 @@ def interpret_response(
 
     return AnalyzedChunk(
         chunk_index=chunk_index,
-        analysis=_sanitize_page_references(parsed, chunk_index, allowed_pages),
+        analysis=_sanitize_analysis(parsed, chunk_index, allowed_pages),
     )
 
 
@@ -453,7 +574,12 @@ async def classify_document_type(
         logger.info("document-type classification returned no parsed output")
         return None
 
-    if guess.confidence is Confidence.LOW or not guess.document_type.strip():
+    # Tidied rather than merely stripped, so the hint gets the same treatment as
+    # every other model-authored string — it is rendered nowhere, but it does go
+    # into the prompt for every chunk.
+    document_type = _tidy(guess.document_type)
+
+    if guess.confidence is Confidence.LOW or not document_type:
         # A weak guess is applied to EVERY chunk, so it correlates errors across
         # the whole run. No hint is better than a bad one.
         logger.info(
@@ -465,10 +591,10 @@ async def classify_document_type(
 
     logger.info(
         "document classified as %r (confidence=%s)",
-        guess.document_type,
+        document_type,
         guess.confidence.value,
     )
-    return guess.document_type.strip()
+    return document_type
 
 
 async def analyze_document(

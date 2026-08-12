@@ -34,6 +34,7 @@ from models.schemas import (
     Confidence,
     DocumentChunk,
     DocumentTypeGuess,
+    MissingClause,
     RiskFlag,
     RiskLevel,
 )
@@ -522,6 +523,126 @@ async def main() -> int:
         isinstance(got, AnalyzedChunk)
         and got.analysis.risk_flags[0].page_reference is None,
     )
+
+    r.section("model text normalization")
+
+    # Observed live: an explanation ending in a literal "}]", and another with a
+    # trailing newline. Both are valid JSON, so the schema cannot catch either.
+    # The must-NOT-change rows are the point of the balance check — this runs over
+    # every string the model writes, so a rule that eats real content is worse than
+    # no rule.
+    for label, raw, expected in [
+        ("trailing }] is removed", "...on Landlord's part.}]", "...on Landlord's part."),
+        ("trailing newlines are stripped", "Liability is uncapped.\n\n", "Liability is uncapped."),
+        ("padded label is stripped", "  Indemnification  ", "Indemnification"),
+        ("lone unbalanced closer is removed", "Tenant waives all claims]", "Tenant waives all claims"),
+        ("balanced brackets survive", "See Exhibit A [as amended]", "See Exhibit A [as amended]"),
+        ("balanced braces survive", "Rent is max{8%, CPI}", "Rent is max{8%, CPI}"),
+        ("only the unbalanced closer goes", "a[b]c}", "a[b]c"),
+        ("ordinary text is untouched", "Fees apply.", "Fees apply."),
+        ("whitespace-only becomes empty", "   ", ""),
+    ]:
+        r.check(label, analyzer._tidy(raw) == expected, repr(analyzer._tidy(raw)))
+
+    dirty = ChunkAnalysis(
+        summary="  The lease is one-sided.\n\n",
+        risk_flags=[
+            RiskFlag(
+                clause_type=" Indemnification ",
+                severity=RiskLevel.HIGH,
+                explanation="Tenant indemnifies Landlord for Landlord's negligence.}]",
+                page_reference=3,
+            )
+        ],
+        missing_clauses=[
+            MissingClause(
+                clause_name="Governing Law\n",
+                importance=RiskLevel.MEDIUM,
+                explanation="No governing law provision appears.}]",
+            )
+        ],
+        document_type=" Commercial Lease ",
+    )
+    got = analyzer.interpret_response(
+        stub_response("end_turn", dirty), 0, allowed_pages=[3]
+    )
+    a = got.analysis
+    r.check("summary is tidied", a.summary == "The lease is one-sided.")
+    r.check("document_type is tidied", a.document_type == "Commercial Lease")
+    r.check("clause_type is tidied", a.risk_flags[0].clause_type == "Indemnification")
+    r.check(
+        "risk explanation is tidied",
+        a.risk_flags[0].explanation.endswith("negligence."),
+        repr(a.risk_flags[0].explanation[-24:]),
+    )
+    r.check("clause_name is tidied", a.missing_clauses[0].clause_name == "Governing Law")
+    r.check(
+        "missing explanation is tidied",
+        a.missing_clauses[0].explanation == "No governing law provision appears.",
+    )
+    r.check("a valid page reference survives tidying", a.risk_flags[0].page_reference == 3)
+
+    # Cleanup must never manufacture the state ai-output.md forbids: a conclusion
+    # with no explanation. An odd-looking explanation beats a missing one.
+    artifact_only = ChunkAnalysis(
+        summary="S",
+        risk_flags=[
+            RiskFlag(
+                clause_type="Indemnification",
+                severity=RiskLevel.HIGH,
+                explanation="}]",
+                page_reference=None,
+            )
+        ],
+        missing_clauses=[],
+        document_type="Lease",
+    )
+    got = analyzer.interpret_response(stub_response("end_turn", artifact_only), 0)
+    r.check(
+        "a field that would tidy to empty keeps its original text",
+        got.analysis.risk_flags[0].explanation == "}]",
+    )
+
+    # The two sanitizers are independent and must both apply in one pass.
+    both = ChunkAnalysis(
+        summary="S",
+        risk_flags=[
+            RiskFlag(
+                clause_type="Assignment",
+                severity=RiskLevel.MEDIUM,
+                explanation="Consent may be withheld.}]",
+                page_reference=99,
+            )
+        ],
+        missing_clauses=[],
+        document_type="Lease",
+    )
+    got = analyzer.interpret_response(
+        stub_response("end_turn", both), 0, allowed_pages=[1, 2]
+    )
+    r.check(
+        "text tidying and page nulling compose",
+        got.analysis.risk_flags[0].explanation == "Consent may be withheld."
+        and got.analysis.risk_flags[0].page_reference is None,
+    )
+
+    clean = ChunkAnalysis(
+        summary="Already clean.",
+        risk_flags=[
+            RiskFlag(
+                clause_type="Term",
+                severity=RiskLevel.LOW,
+                explanation="Five years.",
+                page_reference=1,
+            )
+        ],
+        missing_clauses=[],
+        document_type="Lease",
+    )
+    got = analyzer.interpret_response(
+        stub_response("end_turn", clean), 0, allowed_pages=[1]
+    )
+    r.check("a clean analysis is returned unchanged, not copied", got.analysis is clean)
 
     return r.finish()
 

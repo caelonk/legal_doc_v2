@@ -38,6 +38,11 @@ every claim as something the user must be able to check.
 - Show counts instead: `3 high · 5 medium · 2 low`.
 - Each flag is dismissible or markable as reviewed in local state. The tool proposes; the
   reader decides.
+- Model-authored strings arrive DISPLAY-READY. `analyzer._tidy` already strips surrounding
+  whitespace and removes trailing `}` / `]` that nothing in the string opens — both were
+  seen in live output, and both are valid JSON, so the schema cannot catch either. Do not
+  add a second cleanup pass in the frontend: two normalizers drift, and the UI copy would
+  stop matching what the logs recorded. Render the fields as given.
 
 ## Framing and ethics
 - Persistent, non-permanently-dismissible disclosure in the results header:
