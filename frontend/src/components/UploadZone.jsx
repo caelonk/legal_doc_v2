@@ -29,8 +29,15 @@ function formatBytes(bytes) {
  * When health has not loaded, the copy defaults to the STORED wording. Over-stating
  * retention is the safe direction to be wrong; telling someone their contract is not
  * saved when it is, is not.
+ *
+ * `storage ?? {}` rather than a destructuring default, which only fires for
+ * `undefined`. Home passes `health && {...}`, so before the health request settles
+ * this receives NULL — and destructuring null in the parameter list threw, crashing
+ * the entire landing page on first render. Both absent values have to mean the same
+ * thing here, because the caller has no reason to care which one it sends.
  */
-function storageSentence({ available, retentionDays } = {}) {
+function storageSentence(storage) {
+  const { available, retentionDays } = storage ?? {}
   if (available === false) {
     return 'Its text and findings are held in memory for that analysis only and are not saved.'
   }

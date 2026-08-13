@@ -54,10 +54,18 @@ describe('upload disclosure', () => {
     expect(disclosure()).not.toHaveTextContent(/document history/i)
   })
 
-  it('assumes storage while health is still loading', () => {
+  // Both spellings of "not loaded yet", because the caller has no reason to care
+  // which one it sends. `null` is what Home actually passes — `health && {...}`
+  // before the request settles — and it used to CRASH the whole landing page,
+  // while the `undefined` case passed happily. One value tested is not the rule
+  // tested.
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+  ])('assumes storage while health is still loading (%s)', (_label, storage) => {
     // Over-stating retention is the safe direction to be wrong. Telling someone
     // their contract is not saved when it is, is not.
-    render(<UploadZone onSubmit={noop} />)
+    render(<UploadZone onSubmit={noop} storage={storage} />)
     expect(disclosure()).toHaveTextContent(/saved to your document history/i)
     expect(disclosure()).not.toHaveTextContent(/held in memory for that analysis only/i)
   })
@@ -65,6 +73,13 @@ describe('upload disclosure', () => {
   it('omits a retention number rather than inventing one', () => {
     render(<UploadZone onSubmit={noop} />)
     expect(disclosure()).not.toHaveTextContent(/\d+ days/)
+  })
+
+  it('renders at all with no storage information', () => {
+    // The regression this pins is not a wording problem — it is a white screen.
+    // Destructuring null in the parameter list threw before anything rendered.
+    expect(() => render(<UploadZone onSubmit={noop} storage={null} />)).not.toThrow()
+    expect(screen.getByText(/Drag a PDF here/i)).toBeInTheDocument()
   })
 
   it('keeps the disclosure beside the control, not behind an interaction', () => {
