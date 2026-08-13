@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, FileWarning, ShieldAlert } from 'lucide-react'
+import { BookOpen, Check, FileWarning, ShieldAlert } from 'lucide-react'
 import PageReference from './PageReference'
 import RiskBadge from './RiskBadge'
 import {
@@ -50,6 +50,49 @@ function SkippedSections({ skipped }) {
       <p className="mt-2 text-xs text-risk-medium">
         Anything in those pages is missing from the findings below.
       </p>
+    </section>
+  )
+}
+
+/**
+ * The one document-level claim in the payload, and the only one with no page
+ * reference to attach.
+ *
+ * That is why the caption is not decoration. `.claude/rules/ai-output.md` forbids
+ * rendering a conclusion without its provenance, and a whole-document summary has
+ * no single page it came from — so it names its source instead: the section
+ * summaries further down, each of which DOES carry the pages it was written from.
+ * The reader is one scroll from checking it.
+ *
+ * It also never claims more coverage than it has. When sections were skipped, the
+ * summary was written from an incomplete document, and saying so here matters more
+ * than in the findings list — prose reads as a complete account in a way a table
+ * of flags does not.
+ */
+function DocumentSummary({ summary, skippedCount = 0 }) {
+  // Null when the reduce pass was skipped or failed. Omitted entirely rather than
+  // rendered as an empty card: the analysis is unaffected, and an empty heading
+  // would suggest something went missing from the findings.
+  if (!summary) return null
+
+  return (
+    <section>
+      <h2 className="font-serif text-xl text-ink">Summary</h2>
+      <div className="mt-3 rounded-md border border-border bg-surface p-4">
+        <p className="max-w-measure text-base text-ink">{summary}</p>
+        <p className="mt-3 flex items-start gap-2 border-t border-border pt-3 text-xs text-ink-subtle">
+          <BookOpen size={16} strokeWidth={1.5} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span>
+            Written from the section summaries below, which carry the pages they came from.
+            {/* Deliberately does NOT repeat the count — the disclosure directly
+                above already gives it, and saying it twice in one view reads as
+                two separate problems. This states the consequence for THIS
+                paragraph, which that banner does not cover. */}
+            {skippedCount > 0 &&
+              ' Sections that could not be analyzed are not reflected here, so this does not describe the whole document.'}
+          </span>
+        </p>
+      </div>
     </section>
   )
 }
@@ -335,6 +378,13 @@ export default function ResultsPanel({
             page's h1. */}
         <Disclosure />
         <SkippedSections skipped={result.skipped} />
+        {/* Orientation before findings: what IS this document, then what is
+            risky about it. Matches the MVP feature order and how a reader
+            actually approaches a contract they have not read. */}
+        <DocumentSummary
+          summary={result.aggregate?.summary ?? null}
+          skippedCount={result.skipped.length}
+        />
         <RiskFlagTable
           flags={flags}
           onNavigate={onNavigate}

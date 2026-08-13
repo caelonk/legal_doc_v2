@@ -43,7 +43,7 @@ from models.schemas import (
     SkippedSection,
 )
 from services.aggregator import aggregate_run
-from services.analyzer import analyze_document
+from services.analyzer import analyze_document, summarize_document
 from services.chunker import chunk_document_async
 from services.jobs import AnalysisJob
 from services.parser import ParserError, parse_pdf
@@ -168,7 +168,23 @@ async def _run_analysis(
                 chunks, client=client, on_progress=job.record_progress
             )
 
-        job.status = JobStatus.COMPILING
+            # The document-level summary is the reduce half of the map-reduce, so
+            # it belongs to "Compiling results" rather than to "Analyzing 4 of 11
+            # sections" — the stage the reader is watching should be the stage
+            # that is actually happening.
+            #
+            # Inside the semaphore on purpose: it is an API call, and the ceiling
+            # that bounds per-document spend has to cover every call the document
+            # makes, not just the chunk fan-out.
+            job.status = JobStatus.COMPILING
+            if run.analyzed:
+                summary = await summarize_document(
+                    client,
+                    run.analyzed,
+                    document_type=run.document_type_hint,
+                    unanalyzed_sections=len(run.failures),
+                )
+                run = run.model_copy(update={"document_summary": summary})
 
         if not run.analyzed:
             # Every chunk failed. Reporting this as a successful analysis with zero

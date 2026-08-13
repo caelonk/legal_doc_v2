@@ -64,8 +64,9 @@ export function documentMeta(overrides = {}) {
  * `aggregate` — the real merge rules are pinned in backend/tests/test_aggregator.py,
  * where they belong, rather than reimplemented here.
  */
-export function passthroughAggregate(sections, hint = null) {
+export function passthroughAggregate(sections, hint = null, summary = null) {
   return {
+    summary,
     document_type: sections[0]?.analysis.document_type ?? hint,
     document_type_agreement: sections.length,
     sections_analyzed: sections.length,
@@ -87,6 +88,10 @@ export function passthroughAggregate(sections, hint = null) {
   }
 }
 
+export const DOCUMENT_SUMMARY =
+  'This is a five-year commercial lease for retail space. Rent escalates annually and ' +
+  'the tenant carries most maintenance obligations.'
+
 export function analysisResult(overrides = {}) {
   const base = {
     document: documentMeta(),
@@ -103,7 +108,8 @@ export function analysisResult(overrides = {}) {
   return {
     ...base,
     aggregate:
-      overrides.aggregate ?? passthroughAggregate(base.sections, base.document_type_hint),
+      overrides.aggregate ??
+      passthroughAggregate(base.sections, base.document_type_hint, DOCUMENT_SUMMARY),
   }
 }
 

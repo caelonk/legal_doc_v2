@@ -75,6 +75,24 @@ CLASSIFICATION_SAMPLE_CHARS = 6000
 #                                      effort parameter."
 CLASSIFICATION_THINKING: dict[str, str] = {"type": "disabled"}
 
+# Document-level summary reduce pass ---------------------------------------
+# One call AFTER the chunks settle, turning the per-section summaries into a
+# single plain-English summary. Input is the summaries, not the document — the
+# sections have already been read with page markers in place, and re-reading the
+# raw text would mean one call carrying the whole document, which CLAUDE.md
+# forbids outright.
+#
+# Runs on ANALYSIS_MODEL, not the lightweight one. This is the first paragraph a
+# non-lawyer reads about their contract, which is not a labelling task; the input
+# is a few hundred tokens, so the quality is nearly free.
+SUMMARY_MAX_TOKENS = 1000
+
+# Thinking off, and max_tokens dropped to match — the sanctioned pairing in
+# CLAUDE.md, never one without the other. Synthesising prose from material that
+# has already been analyzed is a writing task, not a judgment one; the judgment
+# happened in the chunk calls, where thinking IS enabled.
+SUMMARY_THINKING: dict[str, str] = {"type": "disabled"}
+
 # Chunking -----------------------------------------------------------------
 CHUNK_TOKENS = 3000
 OVERLAP_TOKENS = 200

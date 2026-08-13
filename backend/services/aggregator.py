@@ -281,6 +281,10 @@ def aggregate_run(run: AnalysisRun) -> DocumentAggregate:
     document_type, agreement = _reconcile_document_type(run)
 
     return DocumentAggregate(
+        # Carried through, never composed here. Producing it takes an API call and
+        # this module is pure by design — that is what makes every merge rule
+        # above testable without a network. `analyzer.summarize_document` owns it.
+        summary=run.document_summary,
         document_type=document_type,
         document_type_agreement=agreement,
         sections_analyzed=len(run.analyzed),

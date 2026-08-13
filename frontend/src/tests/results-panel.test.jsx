@@ -1,7 +1,14 @@
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import ResultsPanel from '../components/ResultsPanel'
-import { analysisResult, missingClause, riskFlag, section } from './fixtures'
+import {
+  DOCUMENT_SUMMARY,
+  analysisResult,
+  missingClause,
+  passthroughAggregate,
+  riskFlag,
+  section,
+} from './fixtures'
 
 const renderPanel = (result) => render(<ResultsPanel result={result} onNavigate={() => {}} />)
 
@@ -89,6 +96,57 @@ describe('claim separation', () => {
   it('frames absence as the weaker claim', () => {
     renderPanel(analysisResult())
     expect(screen.getByText(/weaker claim than a flagged clause/i)).toBeInTheDocument()
+  })
+})
+
+describe('document-level summary', () => {
+  const withSummary = (summary, rest = {}) =>
+    analysisResult({
+      ...rest,
+      aggregate: { ...passthroughAggregate([section()], 'Commercial Lease', summary) },
+    })
+
+  it('renders the document summary', () => {
+    renderPanel(analysisResult())
+    expect(screen.getByText(DOCUMENT_SUMMARY)).toBeInTheDocument()
+  })
+
+  it('names where the summary came from', () => {
+    // The only claim in the payload with no page reference. It cannot carry a
+    // citation, so it points at the evidence that can — the section summaries in
+    // the same view, each of which shows its pages.
+    renderPanel(analysisResult())
+    expect(screen.getByText(/Written from the section summaries below/i)).toBeInTheDocument()
+  })
+
+  it('never replaces the per-section summaries it was written from', () => {
+    renderPanel(analysisResult())
+    expect(screen.getByText(DOCUMENT_SUMMARY)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /section summaries/i })).toBeInTheDocument()
+  })
+
+  it('omits the section entirely when there is no summary', () => {
+    // Null when the reduce pass failed. An empty card under a "Summary" heading
+    // would suggest something went missing from the findings; nothing did.
+    renderPanel(withSummary(null))
+    expect(screen.queryByRole('heading', { name: /^summary$/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Written from the section summaries/i)).not.toBeInTheDocument()
+  })
+
+  it('says the summary is incomplete when sections were skipped', () => {
+    // Prose reads as a complete account of the document in a way a table of
+    // flags does not, so the limitation is stated on the paragraph itself.
+    renderPanel(
+      withSummary(DOCUMENT_SUMMARY, {
+        skipped: [{ chunk_index: 2, reason: 'TRUNCATED', message: 'Too long.', pages: [4] }],
+      }),
+    )
+    expect(screen.getByText(/does not describe the whole document/i)).toBeInTheDocument()
+  })
+
+  it('makes no such claim when every section was analyzed', () => {
+    renderPanel(analysisResult())
+    expect(screen.queryByText(/does not describe the whole document/i)).not.toBeInTheDocument()
   })
 })
 

@@ -33,6 +33,7 @@ from models.schemas import (
     ChunkFailureReason,
     Confidence,
     DocumentChunk,
+    DocumentSummary,
     DocumentTypeGuess,
     MissingClause,
     RiskFlag,
@@ -67,12 +68,22 @@ WEAK_GUESS = DocumentTypeGuess(document_type="", confidence=Confidence.LOW)
 STRONG_GUESS = DocumentTypeGuess(document_type="Commercial Lease", confidence=Confidence.HIGH)
 
 
-class _FakeMessages:
-    """Dispatches on output_format so classification and chunk calls stay separable."""
+SUMMARY = DocumentSummary(summary="This is a three-year mutual NDA between two parties.")
 
-    def __init__(self, chunk_script, classification):
+
+class _FakeMessages:
+    """Dispatches on output_format so each pass stays separable.
+
+    Three passes reach this double now — classification, the chunk fan-out, and
+    the document-summary reduce. Only the chunk script is positional; the other
+    two are single calls with their own scripted reply, so a test about chunk
+    behaviour never has to know they happen.
+    """
+
+    def __init__(self, chunk_script, classification, summary):
         self.chunk_script = chunk_script
         self.classification = classification
+        self.summary = summary
         self.chunk_calls = 0
         self.seen: list[dict] = []
 
@@ -83,6 +94,10 @@ class _FakeMessages:
             if isinstance(self.classification, Exception):
                 raise self.classification
             return self.classification
+        if kwargs.get("output_format") is DocumentSummary:
+            if isinstance(self.summary, Exception):
+                raise self.summary
+            return self.summary
         index = self.chunk_calls
         self.chunk_calls += 1
         scripted = self.chunk_script[index]
@@ -98,18 +113,25 @@ class _FakeMessages:
     def classification_requests(self) -> list[dict]:
         return [k for k in self.seen if k.get("output_format") is DocumentTypeGuess]
 
+    @property
+    def summary_requests(self) -> list[dict]:
+        return [k for k in self.seen if k.get("output_format") is DocumentSummary]
+
 
 class FakeClient:
     """Stands in for AsyncAnthropic — records requests, returns scripted replies.
 
     Classification defaults to a LOW-confidence guess, i.e. no hint, so tests that
-    are not about classification see unhinted chunk prompts.
+    are not about classification see unhinted chunk prompts. The summary defaults
+    to a usable one, for the same reason.
     """
 
-    def __init__(self, chunk_script, classification=None):
+    def __init__(self, chunk_script, classification=None, summary=None):
         if classification is None:
             classification = stub_response("end_turn", WEAK_GUESS)
-        self.messages = _FakeMessages(chunk_script, classification)
+        if summary is None:
+            summary = stub_response("end_turn", SUMMARY)
+        self.messages = _FakeMessages(chunk_script, classification, summary)
         self.closed = False
 
     async def close(self) -> None:
@@ -659,6 +681,116 @@ async def main() -> int:
         stub_response("end_turn", clean), 0, allowed_pages=[1]
     )
     r.check("a clean analysis is returned unchanged, not copied", got.analysis is clean)
+
+    # ------------------------------------------------------------------
+    r.section("document-level summary reduce pass")
+
+    def analyzed_sections(*summaries: str) -> list[AnalyzedChunk]:
+        return [
+            AnalyzedChunk(
+                chunk_index=i,
+                analysis=ChunkAnalysis(
+                    summary=text, risk_flags=[], missing_clauses=[], document_type="NDA"
+                ),
+            )
+            for i, text in enumerate(summaries)
+        ]
+
+    sections = analyzed_sections(
+        "The agreement is mutual and runs three years.",
+        "Liability for confidentiality breaches is uncapped.",
+    )
+
+    client = FakeClient([])
+    summary = await analyzer.summarize_document(client, sections, document_type="NDA")
+    sent = client.messages.summary_requests[0]
+
+    r.check("summary uses the analysis model, not the lightweight one",
+            sent["model"] == "claude-sonnet-5", sent["model"])
+    r.check("thinking is disabled explicitly", sent["thinking"] == {"type": "disabled"},
+            str(sent["thinking"]))
+    r.check("max_tokens dropped alongside thinking", sent["max_tokens"] == 1000,
+            str(sent["max_tokens"]))
+    r.check("no effort parameter with thinking disabled", "output_config" not in sent)
+    r.check("no sampling parameters sent",
+            not any(k in sent for k in ("temperature", "top_p", "top_k")))
+    r.check("structured output bound to DocumentSummary",
+            sent["output_format"] is DocumentSummary)
+    r.check("the summary is returned", summary == SUMMARY.summary, repr(summary))
+
+    prompt = sent["messages"][0]["content"]
+    r.check("the section summaries are sent", "runs three years" in prompt)
+    # The whole point of a reduce pass: it reads what the sections concluded, not
+    # the document again. Sending the text would be one call carrying the entire
+    # document, which CLAUDE.md forbids outright.
+    r.check("the document text is NOT sent",
+            "CONFIDENTIALITY" not in prompt and "<section>" not in prompt)
+    r.check("the document type is passed as context", "NDA" in prompt)
+    r.check("a complete run says nothing about missing sections",
+            "could not be analyzed" not in prompt)
+
+    # A summary written from 8 of 11 sections, presented as the document, is an
+    # overreach the reader cannot detect from the prose.
+    client = FakeClient([])
+    await analyzer.summarize_document(client, sections, unanalyzed_sections=3)
+    partial_prompt = client.messages.summary_requests[0]["messages"][0]["content"]
+    r.check("a partial run tells the model what it is missing",
+            "3 sections of this document could not be analyzed" in partial_prompt,
+            partial_prompt[:90])
+    client = FakeClient([])
+    await analyzer.summarize_document(client, sections, unanalyzed_sections=1)
+    r.check("the missing-section count is singularised",
+            "1 section of this document could not be analyzed"
+            in client.messages.summary_requests[0]["messages"][0]["content"])
+
+    # Every failure mode returns None. A summary is a convenience laid on top of
+    # the findings; losing an analysis to it would be absurd.
+    r.check("no analyzed sections means no call and no summary",
+            await analyzer.summarize_document(FakeClient([]), []) is None)
+
+    blank = analyzed_sections("   ", "")
+    quiet = FakeClient([])
+    r.check("sections with nothing to say produce no summary",
+            await analyzer.summarize_document(quiet, blank) is None)
+    r.check("and no call is made for them", quiet.messages.summary_requests == [])
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    for label, scripted in [
+        ("an API error", anthropic.APIStatusError(
+            "boom", response=httpx.Response(500, request=request), body=None)),
+        ("a rate limit", anthropic.RateLimitError(
+            "slow down", response=httpx.Response(429, request=request), body=None)),
+        ("a connection error", anthropic.APIConnectionError(request=request)),
+    ]:
+        client = FakeClient([], summary=scripted)
+        r.check(f"{label} yields no summary rather than raising",
+                await analyzer.summarize_document(client, sections) is None)
+
+    # Truncation matters more here than for the classifier: a summary cut off
+    # mid-sentence still renders, and reads as a complete thought that stops.
+    client = FakeClient([], summary=stub_response("max_tokens", SUMMARY))
+    r.check("a truncated summary is discarded, not shown",
+            await analyzer.summarize_document(client, sections) is None)
+
+    client = FakeClient([], summary=stub_response("refusal", None))
+    r.check("a refusal yields no summary",
+            await analyzer.summarize_document(client, sections) is None)
+
+    client = FakeClient([], summary=stub_response("end_turn", None))
+    r.check("missing parsed output yields no summary",
+            await analyzer.summarize_document(client, sections) is None)
+
+    empty = DocumentSummary(summary="   ")
+    client = FakeClient([], summary=stub_response("end_turn", empty))
+    r.check("an empty summary renders as no summary, not as blank prose",
+            await analyzer.summarize_document(client, sections) is None)
+
+    # This string is rendered to a reader, so it gets the same normalization every
+    # other model-authored string gets.
+    dirty_summary = DocumentSummary(summary="  A three-year mutual NDA.}]  ")
+    client = FakeClient([], summary=stub_response("end_turn", dirty_summary))
+    r.check("the summary is tidied before it reaches a reader",
+            await analyzer.summarize_document(client, sections) == "A three-year mutual NDA.")
 
     return r.finish()
 

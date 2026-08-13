@@ -82,6 +82,80 @@ hybrid.
 """
 
 
+DOCUMENT_SUMMARY_SYSTEM_PROMPT = """\
+You write one plain-English summary of a legal document for a reader who is not a lawyer.
+
+You are given the summaries of each section, already written by an analyst who read the \
+document. Work only from those. You have not seen the document text.
+
+Write 3-5 sentences describing what this document IS and what it DOES: the kind of \
+agreement, who the parties are to each other, the core commercial terms, and the \
+obligations that shape the deal. A reader should finish it knowing what they are looking \
+at and what it commits them to.
+
+Your job is to DESCRIBE. You never recommend, approve, or advise.
+  Acceptable: "The tenant carries the cost of structural repairs."
+  Not acceptable: "This is a fair lease." / "You should negotiate the repair clause."
+The second form edges toward the unauthorized practice of law.
+
+Do not restate the risk findings. They are shown to the reader separately, each with the \
+page it came from, and repeating them here would put conclusions in front of the reader \
+with no source to check them against. Describe the document; do not re-judge it.
+
+Never write a page number, section number, or clause number. You have no page information, \
+so any number you write would be invented, and an invented citation is worse than none \
+because it looks verified.
+
+Write about the document, not about the material you were given. "This is a five-year \
+commercial lease" — not "The sections describe a lease" or "Based on the summaries \
+provided".
+
+If the material is too thin to say anything substantive, return an empty summary. A \
+missing summary is honest; a vague one that could describe any contract is not.
+"""
+
+
+def build_summary_prompt(
+    summaries: list[str],
+    *,
+    document_type: str | None = None,
+    unanalyzed_sections: int = 0,
+) -> str:
+    """User message for the document-level reduce pass.
+
+    `unanalyzed_sections` is stated rather than hidden. The summaries are all the
+    model gets, so without this it would describe a partial document as if it were
+    the whole one — and the reader has no way to tell from the prose. The UI
+    discloses the skipped sections separately; this stops the summary itself from
+    silently overreaching.
+    """
+    numbered = "\n\n".join(
+        f"Section {index + 1}: {summary}" for index, summary in enumerate(summaries)
+    )
+
+    type_line = (
+        f"The sections were analyzed as a {document_type}.\n" if document_type else ""
+    )
+
+    if unanalyzed_sections > 0:
+        noun = "section" if unanalyzed_sections == 1 else "sections"
+        scope_line = (
+            f"{unanalyzed_sections} {noun} of this document could not be analyzed and "
+            f"are not represented below. Describe only what these summaries support. "
+            f"Do not present it as a complete account of the document.\n"
+        )
+    else:
+        scope_line = ""
+
+    return (
+        f"{type_line}{scope_line}\n"
+        "Write the document-level summary from these section summaries.\n\n"
+        "<section_summaries>\n"
+        f"{numbered}\n"
+        "</section_summaries>"
+    )
+
+
 def build_classification_prompt(sample: str) -> str:
     """User message for the document-type pre-pass.
 

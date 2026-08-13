@@ -178,6 +178,35 @@ class DocumentTypeGuess(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Document-level summary. A second internal structured-output contract, used by
+# the reduce pass that turns the per-section summaries into one. Also NOT part of
+# the per-chunk analyzer schema documented in CLAUDE.md — that contract is
+# unchanged.
+# --------------------------------------------------------------------------
+
+
+class DocumentSummary(BaseModel):
+    """One plain-English summary of the whole document.
+
+    Produced from the per-section summaries, never from the document text: the
+    sections have already been read carefully with page markers in place, and
+    re-reading the raw text would mean sending the whole document in one call —
+    which CLAUDE.md forbids outright.
+
+    Deliberately only one field. A document-level claim has no page reference to
+    attach, so this is the most that can be said without provenance. Anything
+    finding-shaped belongs in `risk_flags`, where it is citable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(
+        description="Plain English, 3-5 sentences, describing what this document is "
+        "and what it does. Empty string if the sections give too little to say."
+    )
+
+
+# --------------------------------------------------------------------------
 # Pipeline models. These are internal — they are NOT part of the analyzer's
 # API output contract and are not sent to Claude.
 # --------------------------------------------------------------------------
@@ -334,6 +363,10 @@ class AnalysisRun(BaseModel):
     # conditioned every chunk's missing-clause judgments: a run whose findings look
     # odd is not diagnosable without knowing what the model thought it was reading.
     document_type_hint: str | None = None
+    # The reduce pass over the section summaries, or None when it was skipped or
+    # failed. Lives here rather than in the aggregator because producing it needs
+    # an API call, and services/aggregator.py is pure by design.
+    document_summary: str | None = None
 
     @property
     def total_chunks(self) -> int:
@@ -503,6 +536,15 @@ class DocumentAggregate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    summary: str | None = Field(
+        default=None,
+        description="One plain-English summary of the whole document, written from the "
+        "per-section summaries. Null when the reduce pass was skipped or failed — the "
+        "analysis is unaffected, so the UI omits the section rather than showing an "
+        "empty one. This is the only claim in the payload with no page reference, "
+        "which is why it is a description of the document rather than a finding about "
+        "it; findings stay in `risk_flags`, where they are citable.",
+    )
     document_type: str | None = Field(
         description="Reconciled across sections by majority. Null when nothing was analyzed."
     )

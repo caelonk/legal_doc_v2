@@ -20,7 +20,7 @@ Each test maps to a rule that was previously only prose in `CLAUDE.md`,
 |---|---|
 | `severity.test.js` | HIGH before MEDIUM before LOW (never alphabetical); unlocated findings sort **last within** their severity, not first; no de-duplication across the chunk overlap |
 | `components.test.jsx` | `RiskBadge` always renders a text label and an icon, and has no prop that can suppress either; `PageReference` renders `Source not located` for a null page and never guesses |
-| `results-panel.test.jsx` | Disclosure always present and not dismissible; per-severity counts rather than an aggregate score; skipped sections disclosed with correct singular/plural pages; `ChunkFailure.detail` never rendered; risk flags and missing clauses kept in separate tables |
+| `results-panel.test.jsx` | Disclosure always present and not dismissible; per-severity counts rather than an aggregate score; skipped sections disclosed with correct singular/plural pages; `ChunkFailure.detail` never rendered; risk flags and missing clauses kept in separate tables; the document summary names its source, never replaces the per-section summaries, disappears entirely when null, and says it is incomplete when sections were skipped |
 | `a11y-structure.test.jsx` | Exactly one `h1` and no skipped level, **per layout and per open tab**; every table has `th[scope="col"]`; every button has an accessible name |
 | `analysis-page.test.jsx` | A live region exists in **every** branch — loading, running, complete, failed, error; a FAILED run renders no findings table |
 | `clause-navigator.test.jsx` | Document order rather than severity order; a text severity label on every entry; unlocated findings listed under their own heading and not offered as dead jumps |

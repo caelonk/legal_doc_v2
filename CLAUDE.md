@@ -142,6 +142,28 @@ legal-doc-analyzer/
   chunk, the next chunk opens as a copy of the previous one — which is the shape a
   non-terminating chunker takes.
 - NEVER send the full document text in a single API call
+- The document-level summary is a REDUCE pass over the per-section summaries, never a
+  second read of the document — that would be the single-call-with-everything the line
+  above forbids. `analyzer.summarize_document` runs on ANALYSIS_MODEL with
+  `thinking: {"type": "disabled"}` and `SUMMARY_MAX_TOKENS = 1000`, changed together per
+  the rule above: the judgment already happened in the chunk calls, and this is a writing
+  task over material that has been analyzed. Do NOT send `output_config.effort` with
+  thinking disabled.
+- The summary NEVER fails the analysis. `summarize_document` returns None on every
+  non-clean outcome — API error, refusal, truncation, empty text — and null renders as no
+  summary section at all. Truncation is discarded rather than shown: a summary cut off
+  mid-sentence still renders, and reads as a complete thought that simply stops.
+- It runs inside the COMPILING stage and inside the concurrency semaphore. The stage the
+  reader is watching should be the stage that is happening, and the per-document ceiling
+  has to cover every call the document makes, not just the chunk fan-out.
+- The summary is the ONLY claim in the payload with no page reference. That is why the
+  prompt forbids writing any page, section, or clause number, and forbids restating the
+  risk findings — a conclusion without provenance is what `.claude/rules/ai-output.md`
+  exists to prevent, and the findings already have citations of their own. It describes
+  the document; it does not re-judge it.
+- When sections were skipped, `build_summary_prompt` says so. Prose reads as a complete
+  account of a document in a way a table of flags does not, so the model is told what it
+  is missing and the UI repeats the limitation on the paragraph itself.
 
 ## Expected JSON Output Schema
 Every Claude analysis call must return this exact structure:
@@ -212,6 +234,10 @@ DELETE /api/documents/history/{id}        remove one
 - `AnalysisResult` carries BOTH `aggregate` (the merged document-level view from
   `services/aggregator.py`) and `sections` (the per-chunk evidence). The merge is an
   inference; the raw view is the recourse when an inference is wrong, so both ship.
+  `aggregate.summary` is the document-level summary, and it is the one field the
+  aggregator does NOT compute — producing it takes an API call, and that module is pure
+  by design, which is what lets every merge rule be pinned without a network. The
+  analyzer produces it; `aggregate_run` carries it through.
   Aggregation is conservative on purpose: over-merging deletes a finding, under-merging
   only shows a duplicate. Those are not symmetric harms.
 - `ChunkFailure.detail` NEVER crosses the wire. `SkippedSection` is the public form and

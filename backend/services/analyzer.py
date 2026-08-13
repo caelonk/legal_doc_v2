@@ -29,6 +29,8 @@ from config import (
     EFFORT,
     LIGHTWEIGHT_MODEL,
     MAX_TOKENS_PER_CHUNK,
+    SUMMARY_MAX_TOKENS,
+    SUMMARY_THINKING,
     THINKING_CONFIG,
     TRUNCATION_RETRY_MAX_TOKENS,
 )
@@ -40,14 +42,17 @@ from models.schemas import (
     ChunkFailureReason,
     Confidence,
     DocumentChunk,
+    DocumentSummary,
     DocumentTypeGuess,
     RiskFlag,
 )
 from prompts.analysis import (
     ANALYSIS_SYSTEM_PROMPT,
+    DOCUMENT_SUMMARY_SYSTEM_PROMPT,
     DOCUMENT_TYPE_SYSTEM_PROMPT,
     build_chunk_prompt,
     build_classification_prompt,
+    build_summary_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -595,6 +600,95 @@ async def classify_document_type(
         guess.confidence.value,
     )
     return document_type
+
+
+async def summarize_document(
+    client: AsyncAnthropic,
+    analyzed: list[AnalyzedChunk],
+    *,
+    document_type: str | None = None,
+    unanalyzed_sections: int = 0,
+    model: str = ANALYSIS_MODEL,
+) -> str | None:
+    """Reduce the per-section summaries to one document-level summary.
+
+    Returns None rather than raising, always — the same policy as
+    `classify_document_type`, for the same reason. The findings are the product;
+    a summary is a convenience laid on top of them, and losing an entire analysis
+    because the last, optional call failed would be absurd. Null renders as the
+    section simply not appearing.
+
+    Input is the SUMMARIES, never the document text. The sections were already read
+    with page markers in place, and re-reading the raw text here would be one call
+    carrying the whole document — the thing CLAUDE.md forbids outright.
+
+    On ANALYSIS_MODEL with thinking disabled: the judgment already happened in the
+    chunk calls, and this is a writing task over material that has been analyzed.
+    max_tokens drops to match, which is the pairing CLAUDE.md requires — never one
+    without the other.
+    """
+    summaries = [_tidy(chunk.analysis.summary) for chunk in analyzed]
+    summaries = [summary for summary in summaries if summary]
+    if not summaries:
+        return None
+
+    try:
+        response = await client.messages.parse(
+            model=model,
+            max_tokens=SUMMARY_MAX_TOKENS,
+            system=DOCUMENT_SUMMARY_SYSTEM_PROMPT,
+            thinking=SUMMARY_THINKING,
+            output_format=DocumentSummary,
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_summary_prompt(
+                        summaries,
+                        document_type=document_type,
+                        unanalyzed_sections=unanalyzed_sections,
+                    ),
+                }
+            ],
+        )
+    except (
+        anthropic.RateLimitError,
+        anthropic.APIConnectionError,
+        anthropic.APIStatusError,
+        ValidationError,
+    ) as exc:
+        logger.warning(
+            "document summary failed (%s); the analysis is unaffected: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    if response.stop_reason not in (None, "end_turn", "stop_sequence"):
+        # Truncation matters more here than for the classifier: a summary cut off
+        # mid-sentence would still render, and would read as a complete thought
+        # that simply stops. Discard it.
+        logger.info(
+            "document summary did not finish cleanly (stop_reason=%s); omitting it",
+            response.stop_reason,
+        )
+        return None
+
+    parsed = response.parsed_output
+    if parsed is None:
+        logger.info("document summary returned no parsed output")
+        return None
+
+    # Same normalisation every model-authored string gets before it faces a
+    # reader — this one is rendered, so _tidy is not optional here.
+    summary = _tidy(parsed.summary)
+    if not summary:
+        # The prompt permits an empty summary when the material is too thin. That
+        # is a real answer, and it renders as no summary rather than as a vague
+        # paragraph that could describe any contract.
+        logger.info("document summary came back empty; omitting it")
+        return None
+
+    return summary
 
 
 async def analyze_document(

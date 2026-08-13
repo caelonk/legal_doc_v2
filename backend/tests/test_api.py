@@ -10,6 +10,7 @@ Run: python backend/tests/test_api.py
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 
@@ -37,7 +38,7 @@ from models.schemas import (
 from routers import documents
 from services.aggregator import aggregate_run
 from services.jobs import JobStore, _stage_message
-from test_pipeline import FakeClient, stub_response
+from test_pipeline import SUMMARY, FakeClient, stub_response
 
 from fastapi.testclient import TestClient
 
@@ -125,11 +126,11 @@ def poll(client: TestClient, job_id: str, timeout: float = 10.0) -> dict:
     return body
 
 
-def make_client(chunk_script) -> TestClient:
+def make_client(chunk_script, summary=None) -> TestClient:
     """A TestClient whose app has a stubbed Anthropic client installed."""
     client = TestClient(main.app)
     client.__enter__()  # runs lifespan
-    client.app.state.claude_client = FakeClient(chunk_script)
+    client.app.state.claude_client = FakeClient(chunk_script, summary=summary)
     return client
 
 
@@ -265,6 +266,52 @@ def main_tests() -> int:
         r.check(
             "extraction method is disclosed",
             result["document"]["extraction_method"] in ("pdfplumber", "pymupdf"),
+        )
+        r.check(
+            "the document-level summary reaches the wire",
+            result["aggregate"]["summary"] == SUMMARY.summary,
+            repr(result["aggregate"]["summary"]),
+        )
+        r.check(
+            "the per-section summaries survive alongside it",
+            bool(result["sections"][0]["analysis"]["summary"]),
+            "the merged view never replaces the evidence behind it",
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+    # A summary is a convenience laid on top of the findings. Losing an entire
+    # analysis because the last, optional call failed would be absurd — and worse,
+    # the route would report a completed analysis as a failed one.
+    client = make_client(
+        [stub_response("end_turn", GOOD)],
+        summary=anthropic.APIStatusError(
+            LEAK_MARKER,
+            response=httpx.Response(
+                500, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            ),
+            body=None,
+        ),
+    )
+    try:
+        accepted = upload(client, one_page_pdf()).json()
+        final = poll(client, accepted["job_id"])
+        r.check(
+            "a summary failure still completes the analysis",
+            final["status"] == JobStatus.COMPLETE.value,
+            final.get("error") or "",
+        )
+        r.check(
+            "the findings are intact without a summary",
+            len(final["result"]["aggregate"]["risk_flags"]) == 1,
+        )
+        r.check(
+            "the missing summary is null, not an empty paragraph",
+            final["result"]["aggregate"]["summary"] is None,
+        )
+        r.check(
+            "the summary failure leaks no diagnostics to the wire",
+            LEAK_MARKER not in json.dumps(final),
         )
     finally:
         client.__exit__(None, None, None)

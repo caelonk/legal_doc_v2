@@ -42,11 +42,12 @@ def missing(clause_name, importance=RiskLevel.MEDIUM, explanation="Normally pres
     )
 
 
-def chunk(index, *, flags=(), missing_clauses=(), document_type="Commercial Lease"):
+def chunk(index, *, flags=(), missing_clauses=(), document_type="Commercial Lease",
+          summary="S"):
     return AnalyzedChunk(
         chunk_index=index,
         analysis=ChunkAnalysis(
-            summary="S",
+            summary=summary,
             risk_flags=list(flags),
             missing_clauses=list(missing_clauses),
             document_type=document_type,
@@ -54,8 +55,13 @@ def chunk(index, *, flags=(), missing_clauses=(), document_type="Commercial Leas
     )
 
 
-def run_of(*chunks, hint=None, failures=()):
-    return AnalysisRun(analyzed=list(chunks), failures=list(failures), document_type_hint=hint)
+def run_of(*chunks, hint=None, failures=(), summary=None):
+    return AnalysisRun(
+        analyzed=list(chunks),
+        failures=list(failures),
+        document_type_hint=hint,
+        document_summary=summary,
+    )
 
 
 def main() -> int:
@@ -285,6 +291,25 @@ def main() -> int:
         "the reported spelling is one a section actually used",
         agg.document_type in ("commercial lease", "Commercial Lease"),
     )
+
+    # ------------------------------------------------- document-level summary
+    r.section("document summary passes through, and is not composed here")
+
+    text = "A three-year mutual NDA with uncapped confidentiality liability."
+    agg = aggregate_run(run_of(chunk(0), summary=text))
+    r.check("the summary reaches the aggregate", agg.summary == text, repr(agg.summary))
+
+    agg = aggregate_run(run_of(chunk(0)))
+    r.check("no summary means null, not an empty string", agg.summary is None)
+
+    # This module is pure by design — that is what lets every merge rule above be
+    # pinned without a network. If it ever starts composing a summary from the
+    # section text, it has grown an API call and this check should say so.
+    agg = aggregate_run(
+        run_of(chunk(0, summary="Section one says a thing."), summary=None)
+    )
+    r.check("it never invents a summary from the sections it can see",
+            agg.summary is None, repr(agg.summary))
 
     # ----------------------------------------------------------- edge cases
     r.section("edge cases")
